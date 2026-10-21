@@ -80,6 +80,11 @@ interface PageCanvasProps {
   onCloseZoomWindow: () => void;
   pdfPageDataUrl?: string | null;
   searchHighlightTerm?: string;
+  autoSelectElement?: {
+    kind: 'textBox' | 'image';
+    id: string;
+    tick: number;
+  } | null;
   onCommitPageUpdate: (
     updater: (prev: PageRecord) => PageRecord,
     recordHistory?: boolean
@@ -123,6 +128,7 @@ export function PageCanvas({
   onCloseZoomWindow,
   pdfPageDataUrl,
   searchHighlightTerm,
+  autoSelectElement,
   onCommitPageUpdate,
   onUndo,
   onRedo,
@@ -171,11 +177,31 @@ export function PageCanvas({
     id: string;
   } | null>(null);
 
+  // Seleciona e dá foco automaticamente quando uma nova Caixa de Texto ou Post-it/Sticker é inserido
+  useEffect(() => {
+    if (!autoSelectElement) return;
+    setSelectedElement({
+      kind: autoSelectElement.kind,
+      id: autoSelectElement.id,
+    });
+    const timer = setTimeout(() => {
+      const selector =
+        autoSelectElement.kind === 'textBox'
+          ? `textarea[data-textbox-id="${autoSelectElement.id}"]`
+          : `textarea[data-sticker-id="${autoSelectElement.id}"]`;
+      const el = document.querySelector<HTMLTextAreaElement>(selector);
+      if (el) {
+        el.focus();
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [autoSelectElement]);
+
   // Laser Pointer
   const laserTrailRef = useRef<LaserTrailPoint[]>([]);
   const laserAnimFrameRef = useRef<number | null>(null);
 
-  // Gestos multi-toque (Pinch to zoom + 2-finger Pan simultâneo, 2/3 finger tap undo/redo, 1-finger pan)
+  // Gestos multi-toque (Pinch to zoom / Pinch to resize elemento selecionado + 2-finger Pan)
   const activePointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(
     new Map()
   );
@@ -183,6 +209,17 @@ export function PageCanvas({
   const pinchInitialCenterRef = useRef<{ x: number; y: number } | null>(null);
   const pinchInitialZoomRef = useRef<number>(zoom);
   const pinchInitialPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const elementPinchRef = useRef<{
+    kind: 'image' | 'textBox';
+    id: string;
+    initialDist: number;
+    initialSpanX: number;
+    initialSpanY: number;
+    origW: number;
+    origH: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
   const panStartRef = useRef<{
     clientX: number;
     clientY: number;
@@ -663,6 +700,9 @@ export function PageCanvas({
       return;
     }
 
+    cachedCanvasRectRef.current = e.currentTarget.getBoundingClientRect();
+    const pt = clientToPageCoords(e.clientX, e.clientY);
+
     // 2. Se for um evento de toque (dedo ou palma da mão):
     if (e.pointerType === 'touch') {
       activePointersRef.current.set(e.pointerId, {
@@ -677,14 +717,15 @@ export function PageCanvas({
         multiTouchStartTimeRef.current = performance.now();
       }
 
-      // 2 dedos na tela (quando a caneta NÃO está riscando): Pinch-to-Zoom + Pan livre 2D
+      // 2 dedos na tela (quando a caneta NÃO está riscando):
+      // Se houver um Post-it/Sticker ou Caixa de Texto selecionado, 2 dedos redimensionam (Pinch-to-Resize: largura, altura ou proporcional)!
+      // Caso contrário, 2 dedos fazem Pinch-to-Zoom + Pan livre 2D na página!
       if (touchCount === 2) {
         try {
           e.currentTarget.setPointerCapture(e.pointerId);
         } catch {
           // ignore
         }
-        // Se o 1º dedo havia começado um traço (no modo Dedo + Caneta), cancela o risco acidental
         if (drawingPointerTypeRef.current === 'touch') {
           isDrawingRef.current = false;
           drawingPointerIdRef.current = null;
@@ -695,10 +736,49 @@ export function PageCanvas({
         panStartRef.current = null;
 
         const pts = Array.from(activePointersRef.current.values());
-        pinchInitialDistRef.current = Math.hypot(
-          pts[1].x - pts[0].x,
-          pts[1].y - pts[0].y
-        );
+        const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const spanX = Math.abs(pts[1].x - pts[0].x);
+        const spanY = Math.abs(pts[1].y - pts[0].y);
+
+        if (selectedElement && selectedElement.kind === 'image') {
+          const targetImg = page.images.find(
+            (im) => im.id === selectedElement.id
+          );
+          if (targetImg) {
+            elementPinchRef.current = {
+              kind: 'image',
+              id: targetImg.id,
+              initialDist: Math.max(18, dist),
+              initialSpanX: Math.max(14, spanX),
+              initialSpanY: Math.max(14, spanY),
+              origW: targetImg.width,
+              origH: targetImg.height,
+              origX: targetImg.x,
+              origY: targetImg.y,
+            };
+            return;
+          }
+        } else if (selectedElement && selectedElement.kind === 'textBox') {
+          const targetTb = page.textBoxes.find(
+            (tb) => tb.id === selectedElement.id
+          );
+          if (targetTb) {
+            elementPinchRef.current = {
+              kind: 'textBox',
+              id: targetTb.id,
+              initialDist: Math.max(18, dist),
+              initialSpanX: Math.max(14, spanX),
+              initialSpanY: Math.max(14, spanY),
+              origW: targetTb.width,
+              origH: targetTb.height,
+              origX: targetTb.x,
+              origY: targetTb.y,
+            };
+            return;
+          }
+        }
+
+        pinchInitialDistRef.current = dist;
         pinchInitialCenterRef.current = {
           x: (pts[0].x + pts[1].x) / 2,
           y: (pts[0].y + pts[1].y) / 2,
@@ -728,9 +808,35 @@ export function PageCanvas({
         return;
       }
 
-      // MODO SÓ CANETA (Mão Bloqueada / Palm Rejection):
-      // Ignora completamente 1 toque (palma da mão apoiada ou 1 dedo) — não risca e não move a folha!
-      if (stylusOnlyMode) {
+      // 1 dedo tocou na página: verifica se tocou em cima de uma Caixa de Texto ou Post-it/Sticker para selecioná-lo!
+      for (let i = page.textBoxes.length - 1; i >= 0; i--) {
+        const tb = page.textBoxes[i];
+        if (
+          pt.x >= tb.x &&
+          pt.x <= tb.x + tb.width &&
+          pt.y >= tb.y &&
+          pt.y <= tb.y + tb.height
+        ) {
+          setSelectedElement({ kind: 'textBox', id: tb.id });
+          return;
+        }
+      }
+      for (let i = page.images.length - 1; i >= 0; i--) {
+        const im = page.images[i];
+        if (
+          pt.x >= im.x &&
+          pt.x <= im.x + im.width &&
+          pt.y >= im.y &&
+          pt.y <= im.y + im.height
+        ) {
+          setSelectedElement({ kind: 'image', id: im.id });
+          return;
+        }
+      }
+
+      // Se a ferramenta ativa for Caixa de Texto ('text'), permite criar a caixa tocando com o dedo mesmo no modo Só Caneta!
+      if (stylusOnlyMode && activeTool !== 'text') {
+        setSelectedElement(null);
         return;
       }
     }
@@ -741,10 +847,43 @@ export function PageCanvas({
       multiTouchCountRef.current = 0;
       pinchInitialDistRef.current = null;
       pinchInitialCenterRef.current = null;
+      elementPinchRef.current = null;
       panStartRef.current = null;
     }
 
     if (activeTool === 'readonly') return;
+
+    // Se clicou com mouse ou se está na ferramenta 'text'/'image', verifica se clicou em um Post-it/Sticker ou TextBox existente
+    if (
+      e.pointerType === 'mouse' ||
+      activeTool === 'text' ||
+      activeTool === 'image'
+    ) {
+      for (let i = page.textBoxes.length - 1; i >= 0; i--) {
+        const tb = page.textBoxes[i];
+        if (
+          pt.x >= tb.x &&
+          pt.x <= tb.x + tb.width &&
+          pt.y >= tb.y &&
+          pt.y <= tb.y + tb.height
+        ) {
+          setSelectedElement({ kind: 'textBox', id: tb.id });
+          return;
+        }
+      }
+      for (let i = page.images.length - 1; i >= 0; i--) {
+        const im = page.images[i];
+        if (
+          pt.x >= im.x &&
+          pt.x <= im.x + im.width &&
+          pt.y >= im.y &&
+          pt.y <= im.y + im.height
+        ) {
+          setSelectedElement({ kind: 'image', id: im.id });
+          return;
+        }
+      }
+    }
 
     // Se já houver outro ponteiro desenhando (ex.: dedo enquanto outro dedo toca), ignora
     if (
@@ -755,19 +894,6 @@ export function PageCanvas({
       return;
     }
 
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId);
-    } catch {
-      // ignore
-    }
-
-    // Faz cache único do retângulo do canvas no início do traço (evita getBoundingClientRect a 240Hz)
-    cachedCanvasRectRef.current = e.currentTarget.getBoundingClientRect();
-    drawingPointerIdRef.current = e.pointerId;
-    drawingPointerTypeRef.current = e.pointerType;
-
-    const pt = clientToPageCoords(e.clientX, e.clientY);
-
     // Se clicou fora da seleção do Laço, limpa seleção
     if (lassoSelection) {
       setLassoSelection(null);
@@ -775,19 +901,19 @@ export function PageCanvas({
     }
     setSelectedElement(null);
 
-    // Ferramenta Caixa de Texto: cria nova caixa no ponto clicado
+    // Ferramenta Caixa de Texto: cria nova caixa no ponto clicado e dá foco imediato ao teclado
     if (activeTool === 'text') {
       drawingPointerIdRef.current = null;
       drawingPointerTypeRef.current = null;
       const newBox: TextBoxElement = {
         id: createId('txt'),
-        x: Math.min(pageW - 220, Math.max(24, pt.x - 40)),
-        y: Math.min(pageH - 90, Math.max(24, pt.y - 16)),
-        width: 240,
-        height: 76,
-        text: 'Digite sua nota...',
+        x: Math.min(pageW - 240, Math.max(20, pt.x - 40)),
+        y: Math.min(pageH - 90, Math.max(20, pt.y - 16)),
+        width: 260,
+        height: 84,
+        text: '',
         fontFamily: 'sans',
-        fontSize: 16,
+        fontSize: 17,
         color: penColor,
         backgroundColor: 'transparent',
         borderColor: 'transparent',
@@ -805,8 +931,23 @@ export function PageCanvas({
         true
       );
       setSelectedElement({ kind: 'textBox', id: newBox.id });
+      setTimeout(() => {
+        const el = document.querySelector<HTMLTextAreaElement>(
+          `textarea[data-textbox-id="${newBox.id}"]`
+        );
+        if (el) el.focus();
+      }, 50);
       return;
     }
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+
+    drawingPointerIdRef.current = e.pointerId;
+    drawingPointerTypeRef.current = e.pointerType;
 
     // Ferramenta Borracha
     if (activeTool === 'eraser') {
@@ -902,6 +1043,35 @@ export function PageCanvas({
         y: e.clientY,
         type: e.pointerType,
       });
+
+      // Pinch-to-Resize em um Post-it/Sticker ou Caixa de Texto selecionado (suporta escala proporcional, largura e altura!)
+      if (activePointersRef.current.size === 2 && elementPinchRef.current) {
+        const pts = Array.from(activePointersRef.current.values());
+        const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const spanX = Math.abs(pts[1].x - pts[0].x);
+        const spanY = Math.abs(pts[1].y - pts[0].y);
+
+        const ep = elementPinchRef.current;
+        const uniformFactor = dist / ep.initialDist;
+        const factorX =
+          spanX > 28 && ep.initialSpanX > 22
+            ? (uniformFactor * 0.55 + (spanX / ep.initialSpanX) * 0.45)
+            : uniformFactor;
+        const factorY =
+          spanY > 28 && ep.initialSpanY > 22
+            ? (uniformFactor * 0.55 + (spanY / ep.initialSpanY) * 0.45)
+            : uniformFactor;
+
+        const nextW = Math.round(Math.min(pageW - 16, Math.max(48, ep.origW * factorX)));
+        const nextH = Math.round(Math.min(pageH - 16, Math.max(36, ep.origH * factorY)));
+
+        if (ep.kind === 'image') {
+          updateImageElement(ep.id, { width: nextW, height: nextH });
+        } else {
+          updateTextBox(ep.id, { width: nextW, height: nextH });
+        }
+        return;
+      }
 
       // Pinch-to-Zoom + Pan livre simultâneo com 2 dedos (em qualquer direção: lados, cima, baixo, diagonal)
       if (
@@ -1326,6 +1496,7 @@ export function PageCanvas({
       if (activePointersRef.current.size < 2) {
         pinchInitialDistRef.current = null;
         pinchInitialCenterRef.current = null;
+        elementPinchRef.current = null;
       }
       if (activePointersRef.current.size === 0) {
         panStartRef.current = null;
@@ -1658,14 +1829,372 @@ export function PageCanvas({
         <canvas
           ref={bgCanvasRef}
           style={{ width: `${pageW}px`, height: `${pageH}px` }}
-          className="absolute inset-0 pointer-events-none rounded-[3px]"
+          className="absolute inset-0 z-0 pointer-events-none rounded-[3px]"
         />
 
-        {/* CAMADA 2: Traços Finalizados (Marca-Texto + Formas + Caneta) */}
+        {/* CAMADA 2: Post-its, Figurinhas e Imagens (abaixo da tinta de caneta para permitir escrever por cima com a stylus!) */}
+        <div className="absolute inset-0 z-10 pointer-events-none">
+          {page.images.map((im) => {
+            const isSelected =
+              selectedElement?.kind === 'image' && selectedElement.id === im.id;
+            const isSvgSticker = im.dataUrl.startsWith('data:image/svg+xml');
+            const isBadge =
+              (im.label || '').toLowerCase().includes('prova') ||
+              (im.label || '').toLowerCase().includes('importante');
+
+            const startResizeImage = (
+              e: React.PointerEvent,
+              dirX: -1 | 0 | 1,
+              dirY: -1 | 0 | 1
+            ) => {
+              e.stopPropagation();
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const origW = im.width;
+              const origH = im.height;
+              const origX = im.x;
+              const origY = im.y;
+
+              const onMove = (me: PointerEvent) => {
+                const dx = (me.clientX - startX) / zoom;
+                const dy = (me.clientY - startY) / zoom;
+                let nextW = origW;
+                let nextH = origH;
+                let nextX = origX;
+                let nextY = origY;
+
+                if (dirX === 1) {
+                  nextW = Math.max(48, origW + dx);
+                } else if (dirX === -1) {
+                  const candidateW = origW - dx;
+                  if (candidateW >= 48) {
+                    nextW = candidateW;
+                    nextX = origX + dx;
+                  }
+                }
+
+                if (dirY === 1) {
+                  nextH = Math.max(36, origH + dy);
+                } else if (dirY === -1) {
+                  const candidateH = origH - dy;
+                  if (candidateH >= 36) {
+                    nextH = candidateH;
+                    nextY = origY + dy;
+                  }
+                }
+
+                updateImageElement(im.id, {
+                  x: Math.round(nextX),
+                  y: Math.round(nextY),
+                  width: Math.round(nextW),
+                  height: Math.round(nextH),
+                });
+              };
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+              };
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onUp);
+            };
+
+            return (
+              <div
+                key={im.id}
+                style={{
+                  left: `${im.x}px`,
+                  top: `${im.y}px`,
+                  width: `${im.width}px`,
+                  height: `${im.height}px`,
+                  transform: `rotate(${im.rotation || 0}deg)`,
+                  zIndex: isSelected ? 40 : 10,
+                }}
+                onPointerDown={(e) => {
+                  // Se o usuário tocar com a CANETA (pen) usando Caneta, Marca-Texto, Borracha ou Forma e não clicou em um controle,
+                  // deixa o evento passar para o canvas para escrever/desenhar livremente em cima do Post-it!
+                  if (
+                    e.pointerType === 'pen' &&
+                    !isSelected &&
+                    (activeTool === 'pen' ||
+                      activeTool === 'highlighter' ||
+                      activeTool === 'eraser' ||
+                      activeTool === 'shape' ||
+                      activeTool === 'laser')
+                  ) {
+                    return;
+                  }
+
+                  e.stopPropagation();
+                  setSelectedElement({ kind: 'image', id: im.id });
+
+                  // Se clicou dentro do textarea para digitar, não inicia drag do bloco
+                  if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') {
+                    return;
+                  }
+
+                  const startX = e.clientX;
+                  const startY = e.clientY;
+                  const origX = im.x;
+                  const origY = im.y;
+
+                  const onMove = (me: PointerEvent) => {
+                    const dx = (me.clientX - startX) / zoom;
+                    const dy = (me.clientY - startY) / zoom;
+                    updateImageElement(im.id, {
+                      x: Math.round(origX + dx),
+                      y: Math.round(origY + dy),
+                    });
+                  };
+                  const onUp = () => {
+                    window.removeEventListener('pointermove', onMove);
+                    window.removeEventListener('pointerup', onUp);
+                  };
+                  window.addEventListener('pointermove', onMove);
+                  window.addEventListener('pointerup', onUp);
+                }}
+                className={`absolute select-none group ${
+                  isSelected
+                    ? 'pointer-events-auto ring-2 ring-accent shadow-xl rounded-lg'
+                    : 'pointer-events-auto hover:ring-1 hover:ring-accent/40'
+                }`}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={im.dataUrl}
+                  alt={im.label || 'Elemento'}
+                  draggable={false}
+                  className={`w-full h-full pointer-events-none ${
+                    isSvgSticker ? 'object-fill' : 'object-contain'
+                  }`}
+                />
+
+                {/* Área de Texto Editável dentro do Post-it / Figurinha (permite digitar dentro de Post-its, Importante, Cai na Prova, etc.) */}
+                <textarea
+                  data-sticker-id={im.id}
+                  value={im.text || ''}
+                  onChange={(e) =>
+                    updateImageElement(im.id, { text: e.target.value })
+                  }
+                  placeholder={
+                    isSelected ? 'Toque para digitar ou escreva com a caneta...' : ''
+                  }
+                  style={{
+                    fontSize: `${im.fontSize || 15}px`,
+                    color: im.textColor || '#1E293B',
+                    paddingTop: isBadge ? `${Math.min(34, im.height * 0.4)}px` : '22px',
+                    userSelect: 'text',
+                    WebkitUserSelect: 'text',
+                  }}
+                  className={`absolute inset-0 w-full h-full bg-transparent resize-none px-3 pb-2 focus:outline-none font-medium leading-snug ${
+                    isSelected || (im.text && im.text.trim().length > 0)
+                      ? 'pointer-events-auto'
+                      : 'pointer-events-none'
+                  }`}
+                />
+
+                {isSelected && (
+                  <>
+                    {/* Barra Flutuante Superior do Post-it / Figurinha estilo GoodNotes */}
+                    <div
+                      style={{ backgroundColor: 'var(--bg-surface)' }}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-2xl px-2.5 py-1.5 text-xs whitespace-nowrap z-50"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const el = document.querySelector<HTMLTextAreaElement>(
+                            `textarea[data-sticker-id="${im.id}"]`
+                          );
+                          if (el) el.focus();
+                        }}
+                        className="px-2 py-1 rounded-lg bg-accent/15 text-accent font-semibold hover:bg-accent/25"
+                        title="Digitar texto dentro da figurinha/post-it"
+                      >
+                        Digitar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateImageElement(
+                            im.id,
+                            {
+                              width: Math.max(48, Math.round(im.width * 0.85)),
+                              height: Math.max(36, Math.round(im.height * 0.85)),
+                            },
+                            true
+                          )
+                        }
+                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold"
+                        title="Diminuir tamanho (-15%)"
+                      >
+                        - Tam
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateImageElement(
+                            im.id,
+                            {
+                              width: Math.min(pageW - 20, Math.round(im.width * 1.15)),
+                              height: Math.min(pageH - 20, Math.round(im.height * 1.15)),
+                            },
+                            true
+                          )
+                        }
+                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold"
+                        title="Aumentar tamanho (+15%)"
+                      >
+                        + Tam
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateImageElement(
+                            im.id,
+                            {
+                              fontSize: Math.max(10, (im.fontSize || 15) - 2),
+                            },
+                            true
+                          )
+                        }
+                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold"
+                        title="Diminuir fonte do texto"
+                      >
+                        A-
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateImageElement(
+                            im.id,
+                            {
+                              fontSize: Math.min(42, (im.fontSize || 15) + 2),
+                            },
+                            true
+                          )
+                        }
+                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold"
+                        title="Aumentar fonte do texto"
+                      >
+                        A+
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateImageElement(
+                            im.id,
+                            { rotation: ((im.rotation || 0) + 15) % 360 },
+                            true
+                          )
+                        }
+                        className="p-1.5 rounded-lg hover:bg-dock text-primary"
+                        title="Girar +15°"
+                      >
+                        <RotateCw className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const newId = createId('img');
+                          onCommitPageUpdate(
+                            (prev) => ({
+                              ...prev,
+                              images: [
+                                ...prev.images,
+                                {
+                                  ...im,
+                                  id: newId,
+                                  x: Math.min(pageW - im.width - 10, im.x + 28),
+                                  y: Math.min(pageH - im.height - 10, im.y + 28),
+                                },
+                              ],
+                              updatedAt: Date.now(),
+                            }),
+                            true
+                          );
+                          setSelectedElement({ kind: 'image', id: newId });
+                        }}
+                        className="p-1.5 rounded-lg hover:bg-dock text-primary"
+                        title="Duplicar figurinha"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteImageElement(im.id)}
+                        className="p-1.5 rounded-lg hover:bg-red-500/15 text-[#FF3B30]"
+                        title="Excluir figurinha"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedElement(null)}
+                        className="px-2 py-1 rounded-lg bg-accent text-white font-semibold ml-0.5"
+                        title="Fixar e voltar a escrever por cima"
+                      >
+                        OK
+                      </button>
+                    </div>
+
+                    {/* 8 Alças de Redimensionamento Touch-Friendly (Cantos = Proporcional/Livre, Laterais = Largura, Topo/Base = Altura) */}
+                    {/* Canto Superior Esquerdo */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, -1, -1)}
+                      className="absolute -top-3 -left-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
+                    />
+                    {/* Canto Superior Direito */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, 1, -1)}
+                      className="absolute -top-3 -right-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nesw-resize shadow-md z-40"
+                    />
+                    {/* Canto Inferior Esquerdo */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, -1, 1)}
+                      className="absolute -bottom-3 -left-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nesw-resize shadow-md z-40"
+                    />
+                    {/* Canto Inferior Direito */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, 1, 1)}
+                      className="absolute -bottom-3 -right-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
+                    />
+                    {/* Lateral Direita (Ajustar Largura) */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, 1, 0)}
+                      className="absolute top-1/2 -translate-y-1/2 -right-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
+                      title="Arraste para aumentar/diminuir a Largura"
+                    />
+                    {/* Lateral Esquerda (Ajustar Largura) */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, -1, 0)}
+                      className="absolute top-1/2 -translate-y-1/2 -left-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
+                      title="Arraste para aumentar/diminuir a Largura"
+                    />
+                    {/* Base Inferior (Ajustar Altura) */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, 0, 1)}
+                      className="absolute left-1/2 -translate-x-1/2 -bottom-2.5 w-8 h-3.5 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
+                      title="Arraste para aumentar/diminuir a Altura"
+                    />
+                    {/* Topo Superior (Ajustar Altura) */}
+                    <div
+                      onPointerDown={(e) => startResizeImage(e, 0, -1)}
+                      className="absolute left-1/2 -translate-x-1/2 -top-2.5 w-8 h-3.5 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
+                      title="Arraste para aumentar/diminuir a Altura"
+                    />
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* CAMADA 3: Traços Finalizados (Marca-Texto + Formas + Caneta) - Fica ACIMA dos Post-its/Stickers para a tinta aparecer sobre eles! */}
         <canvas
           ref={staticCanvasRef}
           style={{ width: `${pageW}px`, height: `${pageH}px` }}
-          className="absolute inset-0 pointer-events-none"
+          className="absolute inset-0 z-20 pointer-events-none"
         />
 
         {/* CAMADA 4: Wet Ink Canvas (Captura Pointer Events de Stylus/Toque) */}
@@ -1676,7 +2205,7 @@ export function PageCanvas({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUpOrCancel}
           onPointerCancel={handlePointerUpOrCancel}
-          className={`absolute inset-0 z-10 ${
+          className={`absolute inset-0 z-25 ${
             activeTool === 'eraser'
               ? 'cursor-none'
               : activeTool === 'text'
@@ -1685,121 +2214,9 @@ export function PageCanvas({
           }`}
         />
 
-        {/* CAMADA 3: Objetos Interativos (Imagens, Stickers, Caixas de Texto, Laço, Cursor de Borracha, Janela de Zoom) */}
-        <div className="absolute inset-0 z-20 pointer-events-none">
-          {/* 3.1. Imagens e Adesivos */}
-          {page.images.map((im) => {
-            const isSelected =
-              selectedElement?.kind === 'image' && selectedElement.id === im.id;
-            return (
-              <div
-                key={im.id}
-                style={{
-                  left: `${im.x}px`,
-                  top: `${im.y}px`,
-                  width: `${im.width}px`,
-                  height: `${im.height}px`,
-                  transform: `rotate(${im.rotation || 0}deg)`,
-                }}
-                onPointerDown={(e) => {
-                  e.stopPropagation();
-                  setSelectedElement({ kind: 'image', id: im.id });
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-                  const origX = im.x;
-                  const origY = im.y;
-
-                  const onMove = (me: PointerEvent) => {
-                    const dx = (me.clientX - startX) / zoom;
-                    const dy = (me.clientY - startY) / zoom;
-                    updateImageElement(im.id, {
-                      x: origX + dx,
-                      y: origY + dy,
-                    });
-                  };
-                  const onUp = () => {
-                    window.removeEventListener('pointermove', onMove);
-                    window.removeEventListener('pointerup', onUp);
-                  };
-                  window.addEventListener('pointermove', onMove);
-                  window.addEventListener('pointerup', onUp);
-                }}
-                className={`absolute pointer-events-auto select-none group ${
-                  isSelected
-                    ? 'ring-2 ring-accent shadow-lg'
-                    : 'hover:ring-1 hover:ring-accent/50'
-                }`}
-              >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={im.dataUrl}
-                  alt={im.label || 'Elemento'}
-                  draggable={false}
-                  className="w-full h-full object-contain pointer-events-none"
-                />
-
-                {isSelected && (
-                  <>
-                    {/* Botão Excluir Imagem */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteImageElement(im.id);
-                      }}
-                      className="absolute -top-3 -right-3 w-7 h-7 rounded-full bg-[#FF3B30] text-white flex items-center justify-center shadow-md"
-                      title="Remover imagem"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* Botão Rotacionar */}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        updateImageElement(
-                          im.id,
-                          { rotation: ((im.rotation || 0) + 15) % 360 },
-                          true
-                        );
-                      }}
-                      className="absolute -top-3 -left-3 w-7 h-7 rounded-full bg-accent text-white flex items-center justify-center shadow-md"
-                      title="Rotacionar +15°"
-                    >
-                      <RotateCw className="w-3.5 h-3.5" />
-                    </button>
-
-                    {/* Alça de Redimensionamento no canto inferior direito */}
-                    <div
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        const startX = e.clientX;
-                        const startY = e.clientY;
-                        const origW = im.width;
-                        const origH = im.height;
-                        const onMove = (me: PointerEvent) => {
-                          const dw = (me.clientX - startX) / zoom;
-                          const dh = (me.clientY - startY) / zoom;
-                          updateImageElement(im.id, {
-                            width: Math.max(40, origW + dw),
-                            height: Math.max(40, origH + dh),
-                          });
-                        };
-                        const onUp = () => {
-                          window.removeEventListener('pointermove', onMove);
-                          window.removeEventListener('pointerup', onUp);
-                        };
-                        window.addEventListener('pointermove', onMove);
-                        window.addEventListener('pointerup', onUp);
-                      }}
-                      className="absolute -bottom-2.5 -right-2.5 w-5 h-5 rounded-full bg-white border-2 border-accent cursor-nwse-resize shadow"
-                    />
-                  </>
-                )}
-              </div>
-            );
-          })}
-
-          {/* 3.2. Caixas de Texto Ricas */}
+        {/* CAMADA 5: Caixas de Texto, Laço, Cursor de Borracha e Janela de Zoom */}
+        <div className="absolute inset-0 z-30 pointer-events-none">
+          {/* 5.1. Caixas de Texto Ricas */}
           {page.textBoxes.map((tb) => {
             const isSelected =
               selectedElement?.kind === 'textBox' &&
@@ -1833,17 +2250,20 @@ export function PageCanvas({
                   e.stopPropagation();
                   setSelectedElement({ kind: 'textBox', id: tb.id });
                 }}
-                className={`absolute pointer-events-auto rounded-lg transition-shadow ${
+                className={`absolute pointer-events-auto rounded-xl transition-shadow ${
                   isSelected
-                    ? 'ring-2 ring-accent bg-white/60 dark:bg-black/40 shadow-lg'
+                    ? 'ring-2 ring-accent bg-white/85 dark:bg-zinc-900/85 shadow-xl z-40'
                     : matchesSearch
                     ? 'ring-2 ring-[#FF9500] bg-yellow-300/30'
+                    : tb.text.trim().length === 0
+                    ? 'border-2 border-dashed border-accent/60 bg-white/60 dark:bg-zinc-900/60'
                     : 'hover:ring-1 hover:ring-accent/40'
                 }`}
               >
                 {/* Barra de Arraste + Formatação de Texto quando selecionado */}
                 {isSelected && (
                   <div
+                    style={{ backgroundColor: 'var(--bg-surface)' }}
                     onPointerDown={(e) => {
                       e.stopPropagation();
                       const startX = e.clientX;
@@ -1852,8 +2272,8 @@ export function PageCanvas({
                       const origY = tb.y;
                       const onMove = (me: PointerEvent) => {
                         updateTextBox(tb.id, {
-                          x: origX + (me.clientX - startX) / zoom,
-                          y: origY + (me.clientY - startY) / zoom,
+                          x: Math.round(origX + (me.clientX - startX) / zoom),
+                          y: Math.round(origY + (me.clientY - startY) / zoom),
                         });
                       };
                       const onUp = () => {
@@ -1863,7 +2283,7 @@ export function PageCanvas({
                       window.addEventListener('pointermove', onMove);
                       window.addEventListener('pointerup', onUp);
                     }}
-                    className=" -top-10 left-0 absolute flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-xl rounded-xl px-2 py-1 text-xs cursor-move whitespace-nowrap z-30"
+                    className="-top-11 left-0 absolute flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-xl px-2.5 py-1 text-xs cursor-move whitespace-nowrap z-50"
                   >
                     <button
                       type="button"
@@ -1953,11 +2373,20 @@ export function PageCanvas({
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedElement(null)}
+                      className="px-2 py-0.5 rounded-lg bg-accent text-white font-semibold ml-1"
+                    >
+                      OK
+                    </button>
                   </div>
                 )}
 
                 <textarea
+                  data-textbox-id={tb.id}
                   value={tb.text}
+                  placeholder="Digite sua nota aqui..."
                   onChange={(e) => updateTextBox(tb.id, { text: e.target.value })}
                   style={{
                     fontSize: `${tb.fontSize}px`,
@@ -1965,33 +2394,67 @@ export function PageCanvas({
                     fontWeight: tb.bold ? 700 : 400,
                     fontStyle: tb.italic ? 'italic' : 'normal',
                     textAlign: tb.textAlign,
+                    userSelect: 'text',
+                    WebkitUserSelect: 'text',
                   }}
-                  className={`w-full h-full bg-transparent resize-none p-2 focus:outline-none leading-snug ${fontClass}`}
+                  className={`w-full h-full min-h-[72px] bg-transparent resize-none p-2.5 focus:outline-none leading-snug ${fontClass}`}
                 />
 
                 {isSelected && (
-                  <div
-                    onPointerDown={(e) => {
-                      e.stopPropagation();
-                      const startX = e.clientX;
-                      const startY = e.clientY;
-                      const origW = tb.width;
-                      const origH = tb.height;
-                      const onMove = (me: PointerEvent) => {
-                        updateTextBox(tb.id, {
-                          width: Math.max(100, origW + (me.clientX - startX) / zoom),
-                          height: Math.max(42, origH + (me.clientY - startY) / zoom),
-                        });
-                      };
-                      const onUp = () => {
-                        window.removeEventListener('pointermove', onMove);
-                        window.removeEventListener('pointerup', onUp);
-                      };
-                      window.addEventListener('pointermove', onMove);
-                      window.addEventListener('pointerup', onUp);
-                    }}
-                    className="absolute -bottom-2 -right-2 w-4 h-4 rounded-full bg-white border-2 border-accent cursor-nwse-resize"
-                  />
+                  <>
+                    {/* Alça lateral direita (Largura) */}
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        const startX = e.clientX;
+                        const origW = tb.width;
+                        const onMove = (me: PointerEvent) => {
+                          updateTextBox(tb.id, {
+                            width: Math.max(
+                              110,
+                              Math.round(origW + (me.clientX - startX) / zoom)
+                            ),
+                          });
+                        };
+                        const onUp = () => {
+                          window.removeEventListener('pointermove', onMove);
+                          window.removeEventListener('pointerup', onUp);
+                        };
+                        window.addEventListener('pointermove', onMove);
+                        window.addEventListener('pointerup', onUp);
+                      }}
+                      className="absolute top-1/2 -translate-y-1/2 -right-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md"
+                    />
+                    {/* Alça canto inferior direito (Largura + Altura) */}
+                    <div
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        const startX = e.clientX;
+                        const startY = e.clientY;
+                        const origW = tb.width;
+                        const origH = tb.height;
+                        const onMove = (me: PointerEvent) => {
+                          updateTextBox(tb.id, {
+                            width: Math.max(
+                              110,
+                              Math.round(origW + (me.clientX - startX) / zoom)
+                            ),
+                            height: Math.max(
+                              44,
+                              Math.round(origH + (me.clientY - startY) / zoom)
+                            ),
+                          });
+                        };
+                        const onUp = () => {
+                          window.removeEventListener('pointermove', onMove);
+                          window.removeEventListener('pointerup', onUp);
+                        };
+                        window.addEventListener('pointermove', onMove);
+                        window.addEventListener('pointerup', onUp);
+                      }}
+                      className="absolute -bottom-2.5 -right-2.5 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md"
+                    />
+                  </>
                 )}
               </div>
             );

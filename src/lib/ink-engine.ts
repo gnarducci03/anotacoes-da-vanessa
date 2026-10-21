@@ -58,7 +58,19 @@ export function getSvgPathFromStroke(stroke: number[][]): string {
 }
 
 /**
+ * Curva de sensibilidade da caneta: amplifica toques suaves da stylus (S-Pen / Apple Pencil)
+ * para que a escrita saia fluida e encorpada mesmo sem fazer força na tela.
+ */
+export function boostStylusPressure(rawPressure: number): number {
+  if (!rawPressure || rawPressure <= 0) return 0.58;
+  // Curva gamma < 1 (0.62) deixa o início do toque muito mais sensível e responsivo
+  const boosted = Math.pow(Math.min(1, Math.max(0.05, rawPressure)), 0.62);
+  return Math.min(1, Math.max(0.36, boosted));
+}
+
+/**
  * Desenha um traço de Caneta (Fountain, Ball, Brush) ou Marca-Texto em um Canvas 2D
+ * com alta sensibilidade e renderização direta em curvas quadráticas (zero alocação de Path2D string)
  */
 export function drawStrokeOnCanvas(
   ctx: CanvasRenderingContext2D,
@@ -69,7 +81,7 @@ export function drawStrokeOnCanvas(
   ctx.save();
 
   if (stroke.tool === 'highlighter') {
-    // Marca-texto estilo GoodNotes: ponta chanfrada/arredondada uniforme e translúcida
+    // Marca-texto estilo GoodNotes: ponta arredondada/chanfrada suave com curvas quadráticas
     ctx.globalAlpha = stroke.opacity ?? 0.35;
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.size;
@@ -77,21 +89,40 @@ export function drawStrokeOnCanvas(
     ctx.lineJoin = 'round';
 
     ctx.beginPath();
-    const [first, ...rest] = stroke.points;
-    ctx.moveTo(first.x, first.y);
-    if (rest.length === 0) {
-      ctx.lineTo(first.x + 0.1, first.y + 0.1);
+    const pts = stroke.points;
+    ctx.moveTo(pts[0].x, pts[0].y);
+    if (pts.length === 1) {
+      ctx.lineTo(pts[0].x + 0.1, pts[0].y + 0.1);
+    } else if (pts.length === 2) {
+      ctx.lineTo(pts[1].x, pts[1].y);
     } else {
-      for (const pt of rest) {
-        ctx.lineTo(pt.x, pt.y);
+      for (let i = 1; i < pts.length - 1; i++) {
+        const midX = (pts[i].x + pts[i + 1].x) / 2;
+        const midY = (pts[i].y + pts[i + 1].y) / 2;
+        ctx.quadraticCurveTo(pts[i].x, pts[i].y, midX, midY);
       }
+      const last = pts[pts.length - 1];
+      ctx.lineTo(last.x, last.y);
     }
     ctx.stroke();
     ctx.restore();
     return;
   }
 
-  // Caneta: configurações calibradas para Fountain, Ball e Brush
+  // Ponto único ou pingo de letra ("i", "j", "."): desenha círculo imediato e nítido
+  if (stroke.points.length === 1) {
+    const p = stroke.points[0];
+    const radius = Math.max(1.2, stroke.size * 0.55);
+    ctx.fillStyle = stroke.color;
+    ctx.globalAlpha = stroke.opacity ?? 1;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+
+  // Caneta: configurações calibradas para resposta imediata na ponta da caneta (baixo streamline = zero atraso)
   const tipConfig: Record<
     PenTipType,
     {
@@ -104,28 +135,28 @@ export function drawStrokeOnCanvas(
     }
   > = {
     fountain: {
-      thinning: 0.58,
-      smoothing: 0.55,
-      streamline: 0.48,
+      thinning: 0.44,
+      smoothing: 0.38,
+      streamline: 0.22,
       simulatePressure: false,
       startTaper: 0,
       endTaper: 0,
     },
     ball: {
-      thinning: 0.06,
-      smoothing: 0.5,
-      streamline: 0.5,
+      thinning: 0.04,
+      smoothing: 0.32,
+      streamline: 0.18,
       simulatePressure: false,
       startTaper: 0,
       endTaper: 0,
     },
     brush: {
-      thinning: 0.78,
-      smoothing: 0.65,
-      streamline: 0.55,
+      thinning: 0.72,
+      smoothing: 0.45,
+      streamline: 0.26,
       simulatePressure: false,
-      startTaper: 12,
-      endTaper: 18,
+      startTaper: 10,
+      endTaper: 14,
     },
   };
 
@@ -135,9 +166,13 @@ export function drawStrokeOnCanvas(
   );
 
   const outlinePoints = getStroke(
-    stroke.points.map((p) => [p.x, p.y, p.pressure || 0.5]),
+    stroke.points.map((p) => [
+      p.x,
+      p.y,
+      hasRealPressure ? boostStylusPressure(p.pressure) : 0.58,
+    ]),
     {
-      size: stroke.size,
+      size: stroke.size * 1.08,
       thinning: cfg.thinning,
       smoothing: cfg.smoothing,
       streamline: cfg.streamline,
@@ -147,12 +182,19 @@ export function drawStrokeOnCanvas(
     }
   );
 
-  const pathData = getSvgPathFromStroke(outlinePoints);
-  if (pathData && typeof Path2D !== 'undefined') {
-    const path2d = new Path2D(pathData);
+  if (outlinePoints.length > 0) {
     ctx.fillStyle = stroke.color;
     ctx.globalAlpha = stroke.opacity ?? 1;
-    ctx.fill(path2d);
+    ctx.beginPath();
+    const [firstX, firstY] = outlinePoints[0];
+    ctx.moveTo(firstX, firstY);
+    for (let i = 0; i < outlinePoints.length; i++) {
+      const [x0, y0] = outlinePoints[i];
+      const [x1, y1] = outlinePoints[(i + 1) % outlinePoints.length];
+      ctx.quadraticCurveTo(x0, y0, (x0 + x1) / 2, (y0 + y1) / 2);
+    }
+    ctx.closePath();
+    ctx.fill();
   }
 
   ctx.restore();

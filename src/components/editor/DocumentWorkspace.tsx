@@ -480,28 +480,88 @@ export function DocumentWorkspace({
     setCurrentPageIndex((idx) => Math.max(0, idx - 1));
   };
 
-  // Inserir Imagem ou Sticker na página atual
-  const handleInsertImageDataUrl = (dataUrl: string, label = 'Imagem') => {
+  // Elemento recém-inserido para seleção/foco imediato no PageCanvas
+  const [autoSelectElement, setAutoSelectElement] = useState<{
+    kind: 'textBox' | 'image';
+    id: string;
+    tick: number;
+  } | null>(null);
+
+  // Inserir Imagem ou Sticker na página atual (com cascata de posição para nunca sobrepor e seleção imediata)
+  const handleInsertImageDataUrl = (
+    dataUrl: string,
+    label = 'Imagem',
+    defaultWidth = 220,
+    defaultHeight = 190
+  ) => {
+    const newId = createId('img');
     handleCommitPageUpdate(
-      (prev) => ({
-        ...prev,
-        images: [
-          ...prev.images,
-          {
-            id: createId('img'),
-            dataUrl,
-            x: 190,
-            y: 220,
-            width: 220,
-            height: 180,
-            rotation: 0,
-            label,
-          },
-        ],
-        updatedAt: Date.now(),
-      }),
+      (prev) => {
+        const offset = (prev.images.length % 6) * 32;
+        return {
+          ...prev,
+          images: [
+            ...prev.images,
+            {
+              id: newId,
+              dataUrl,
+              x: 150 + offset,
+              y: 165 + offset,
+              width: defaultWidth,
+              height: defaultHeight,
+              rotation: 0,
+              label,
+              text: '',
+              fontSize: 15,
+              textColor: '#1E293B',
+            },
+          ],
+          updatedAt: Date.now(),
+        };
+      },
       true
     );
+    setAutoSelectElement({ kind: 'image', id: newId, tick: Date.now() });
+  };
+
+  // Inserir Caixa de Texto rapidamente ao clicar na ferramenta 'T'
+  const handleSelectTool = (tool: ActiveToolId) => {
+    setActiveTool(tool);
+    if (tool === 'text') {
+      const newId = createId('txt');
+      const activeColor = penColorSlots[activePenColorSlot];
+      handleCommitPageUpdate(
+        (prev) => {
+          const offset = (prev.textBoxes.length % 6) * 28;
+          return {
+            ...prev,
+            textBoxes: [
+              ...prev.textBoxes,
+              {
+                id: newId,
+                x: 140 + offset,
+                y: 160 + offset,
+                width: 260,
+                height: 84,
+                text: '',
+                fontFamily: 'sans',
+                fontSize: 17,
+                color: activeColor,
+                backgroundColor: 'transparent',
+                borderColor: 'transparent',
+                textAlign: 'left',
+                bold: false,
+                italic: false,
+                rotation: 0,
+              },
+            ],
+            updatedAt: Date.now(),
+          };
+        },
+        true
+      );
+      setAutoSelectElement({ kind: 'textBox', id: newId, tick: Date.now() });
+    }
   };
 
   // Exportar Página Atual como PNG
@@ -772,7 +832,7 @@ export function DocumentWorkspace({
       {/* 2. WRITING TOOLBAR (Ocultada automaticamente quando em Modo Somente Leitura) */}
       <WritingToolbar
         activeTool={activeTool}
-        onSelectTool={setActiveTool}
+        onSelectTool={handleSelectTool}
         penType={penType}
         onChangePenType={setPenType}
         penColorSlots={penColorSlots}
@@ -889,6 +949,7 @@ export function DocumentWorkspace({
         onCloseZoomWindow={() => setZoomWindowOpen(false)}
         pdfPageDataUrl={pdfPageDataUrl}
         searchHighlightTerm={docSearchQuery}
+        autoSelectElement={autoSelectElement}
         onCommitPageUpdate={handleCommitPageUpdate}
         onUndo={handleUndo}
         onRedo={handleRedo}
@@ -1009,8 +1070,8 @@ export function DocumentWorkspace({
       <StickersPopover
         isOpen={stickersModalOpen}
         onClose={() => setStickersModalOpen(false)}
-        onSelectSticker={(dataUrl, name) =>
-          handleInsertImageDataUrl(dataUrl, name)
+        onSelectSticker={(dataUrl, name, defW, defH) =>
+          handleInsertImageDataUrl(dataUrl, name, defW, defH)
         }
       />
     </div>

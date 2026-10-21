@@ -236,6 +236,24 @@ export async function renderFullPageToDataUrl(
           ctx.translate(-cx, -cy);
         }
         ctx.drawImage(img, im.x, im.y, im.width, im.height);
+        if (im.text && im.text.trim().length > 0) {
+          const fs = im.fontSize || 15;
+          ctx.fillStyle = im.textColor || '#1E293B';
+          ctx.font = `600 ${fs}px -apple-system, BlinkMacSystemFont, "Inter", sans-serif`;
+          const isBadge =
+            (im.label || '').toLowerCase().includes('prova') ||
+            (im.label || '').toLowerCase().includes('importante');
+          const topPad = isBadge ? Math.min(36, im.height * 0.42) : 26;
+          const lines = im.text.split('\n');
+          lines.forEach((line, idx) => {
+            ctx.fillText(
+              line,
+              im.x + 14,
+              im.y + topPad + fs + idx * (fs * 1.28),
+              Math.max(40, im.width - 28)
+            );
+          });
+        }
         ctx.restore();
         resolve();
       };

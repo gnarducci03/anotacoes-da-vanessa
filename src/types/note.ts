@@ -141,6 +141,9 @@ export interface ImageElement {
   height: number;
   rotation: number;
   label?: string;
+  text?: string;
+  fontSize?: number;
+  textColor?: string;
 }
 
 export interface PageRecord {

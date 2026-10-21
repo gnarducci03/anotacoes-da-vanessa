@@ -181,6 +181,11 @@ export function WritingToolbar({
   }
 
   const handleToolClick = (tool: ActiveToolId) => {
+    if (tool === 'text') {
+      onSelectTool('text');
+      setOpenPopover(null);
+      return;
+    }
     if (activeTool === tool) {
       if (
         tool === 'pen' ||
@@ -426,7 +431,6 @@ export function WritingToolbar({
         {/* 8. Inserir Imagem */}
         <button
           onClick={() => {
-            onSelectTool('image');
             onTriggerUploadImage();
           }}
           className={`px-2.5 py-1.5 rounded-xl flex items-center gap-1.5 transition-all ${
