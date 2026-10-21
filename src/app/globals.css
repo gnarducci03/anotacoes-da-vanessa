@@ -4,34 +4,52 @@
 
 :root {
   --bg-app: #F2F2F7;
+  --bg-app-rgb: 242 242 247;
   --bg-surface: #FFFFFF;
-  --bg-elevated: rgba(255, 255, 255, 0.88);
+  --bg-surface-rgb: 255 255 255;
+  --bg-elevated: #FFFFFF;
+  --bg-elevated-rgb: 255 255 255;
   --bg-toolbar-dock: #EAECEF;
+  --bg-toolbar-dock-rgb: 234 236 239;
   --bg-canvas-workspace: #E2E4E9;
+  --bg-canvas-workspace-rgb: 226 228 233;
   --text-primary: #1C1C1E;
+  --text-primary-rgb: 28 28 30;
   --text-secondary: #636366;
+  --text-secondary-rgb: 99 99 102;
   --text-muted: #8E8E93;
+  --text-muted-rgb: 142 142 147;
   --accent-primary: #007AFF;
+  --accent-primary-rgb: 0 122 255;
   --accent-teal: #00B4D8;
   --accent-star: #FF9500;
   --accent-danger: #FF3B30;
-  --border-subtle: rgba(60, 60, 67, 0.14);
+  --border-subtle: rgba(60, 60, 67, 0.16);
 }
 
 .dark {
   --bg-app: #000000;
+  --bg-app-rgb: 0 0 0;
   --bg-surface: #1C1C1E;
-  --bg-elevated: rgba(28, 28, 30, 0.88);
+  --bg-surface-rgb: 28 28 30;
+  --bg-elevated: #242426;
+  --bg-elevated-rgb: 36 36 38;
   --bg-toolbar-dock: #2C2C2E;
+  --bg-toolbar-dock-rgb: 44 44 46;
   --bg-canvas-workspace: #111114;
+  --bg-canvas-workspace-rgb: 17 17 20;
   --text-primary: #F2F2F7;
+  --text-primary-rgb: 242 242 247;
   --text-secondary: #AEAEB2;
+  --text-secondary-rgb: 174 174 178;
   --text-muted: #636366;
+  --text-muted-rgb: 99 99 102;
   --accent-primary: #0A84FF;
+  --accent-primary-rgb: 10 132 255;
   --accent-teal: #38BDF8;
   --accent-star: #FF9F0A;
   --accent-danger: #FF453A;
-  --border-subtle: rgba(255, 255, 255, 0.15);
+  --border-subtle: rgba(255, 255, 255, 0.18);
 }
 
 * {

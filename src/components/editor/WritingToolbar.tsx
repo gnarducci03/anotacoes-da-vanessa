@@ -45,11 +45,17 @@ export const PEN_COLOR_PALETTE = [
 
 export const HIGHLIGHTER_COLOR_PALETTE = [
   '#FACC15', // Amarelo Solar
+  '#FDE047', // Amarelo Limão
   '#F472B6', // Rosa Pastel
+  '#FB7185', // Rosa Coral
   '#4ADE80', // Verde Menta
-  '#38BDF8', // Azul Gelo
+  '#A3E635', // Verde Lima
+  '#38BDF8', // Azul Céu
+  '#2DD4BF', // Turquesa Água
   '#FB923C', // Laranja Pêssego
+  '#FBBF24', // Âmbar Quente
   '#C084FC', // Lavanda
+  '#818CF8', // Índigo Suave
 ];
 
 interface WritingToolbarProps {
@@ -238,32 +244,37 @@ export function WritingToolbar({
           <span className="hidden lg:inline">Zoom</span>
         </button>
 
-        {/* Toggle Stylus-Only / Palm Rejection (Bloqueio Total da Mão) */}
+        {/* Toggle Stylus-Only / Palm Rejection (Proporcional e na paleta GoodNotes) */}
         <button
           onClick={onToggleStylusOnlyMode}
-          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
+          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-all flex items-center gap-1.5 ${
             stylusOnlyMode
-              ? 'bg-emerald-600 text-white ring-2 ring-emerald-500/40'
-              : 'bg-surface hover:bg-dock text-primary border border-[var(--border-subtle)]'
+              ? 'bg-accent/15 text-accent ring-1 ring-accent/35'
+              : 'hover:bg-surface text-secondary hover:text-primary'
           }`}
-          title="Quando ativo (Verde), a palma da mão é 100% ignorada ao escrever e 2 dedos movem/dão zoom na folha"
+          title={
+            stylusOnlyMode
+              ? 'Modo Só Caneta Ativo: a palma da mão é bloqueada ao escrever (use 2 dedos para mover/zoom)'
+              : 'Modo Dedo + Caneta: toque para bloquear a mão e escrever só com a caneta'
+          }
         >
           {stylusOnlyMode ? (
             <>
               <PenTool className="w-3.5 h-3.5" />
-              <span>Só Caneta (Mão Bloqueada)</span>
+              <span>Só Caneta</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-accent" />
             </>
           ) : (
             <>
-              <Hand className="w-3.5 h-3.5 text-amber-500" />
-              <span>Dedo + Caneta</span>
+              <Hand className="w-3.5 h-3.5" />
+              <span>Caneta + Toque</span>
             </>
           )}
         </button>
       </div>
 
       {/* Centro: Instrumentos de Escrita estilo GoodNotes */}
-      <div className="flex items-center bg-surface/90 px-2 py-1 rounded-2xl shadow-sm border border-[var(--border-subtle)] gap-1">
+      <div className="flex items-center bg-surface px-2 py-1 rounded-2xl shadow-sm border border-[var(--border-subtle)] gap-1">
         {/* 1. Caneta (Fountain / Ball / Brush) */}
         <button
           onClick={() => handleToolClick('pen')}
@@ -442,15 +453,15 @@ export function WritingToolbar({
         </button>
       </div>
 
-      {/* Direita: 3 Slots de Cores + 3 Slots de Espessura (Contextuais da Caneta/Marca-Texto/Formas) */}
-      <div className="flex items-center gap-3">
+      {/* Direita: Slots de Cores + Paleta Completa + Espessura (Contextuais da Caneta/Marca-Texto/Formas) */}
+      <div className="flex items-center gap-2.5">
         {(activeTool === 'pen' ||
           activeTool === 'highlighter' ||
           activeTool === 'shape' ||
           activeTool === 'text') && (
           <>
-            {/* 3 Slots de Cores */}
-            <div className="flex items-center gap-1.5 bg-surface/90 px-2 py-1 rounded-full border border-[var(--border-subtle)]">
+            {/* Slots de Cores + Botão Paleta de 12 Cores */}
+            <div className="flex items-center gap-1.5 bg-surface px-2 py-1 rounded-full border border-[var(--border-subtle)] shadow-xs">
               {colorSlots.map((color, idx) => {
                 const isSelected = activeColorSlot === idx;
                 return (
@@ -473,14 +484,29 @@ export function WritingToolbar({
                         : 'border-black/20 hover:scale-105'
                     }`}
                     style={{ backgroundColor: color }}
-                    title="Toque para selecionar • Toque novamente para trocar a cor do slot"
+                    title="Toque para selecionar • Toque novamente para abrir todas as cores"
                   />
                 );
               })}
+
+              {/* Botão multicolorido para abrir diretamente todas as 12 opções de cores */}
+              <button
+                onClick={() =>
+                  setOpenPopover((prev) =>
+                    prev === 'colorPicker' ? null : 'colorPicker'
+                  )
+                }
+                className="w-6 h-6 rounded-full border border-black/20 hover:scale-105 transition-transform flex items-center justify-center text-[11px] font-bold text-white shadow-inner"
+                style={{
+                  background:
+                    'conic-gradient(from 0deg, #FACC15, #F472B6, #C084FC, #38BDF8, #4ADE80, #FB923C, #FACC15)',
+                }}
+                title="Escolher entre todas as 12 cores"
+              />
             </div>
 
             {/* 3 Slots de Espessura */}
-            <div className="hidden sm:flex items-center gap-1 bg-surface/90 px-2 py-1 rounded-full border border-[var(--border-subtle)]">
+            <div className="hidden sm:flex items-center gap-1 bg-surface px-2 py-1 rounded-full border border-[var(--border-subtle)] shadow-xs">
               {(isHighlighter ? highlighterSizeSlots : penSizeSlots).map(
                 (sz, idx) => {
                   const isSelected =
@@ -525,7 +551,7 @@ export function WritingToolbar({
 
         {/* Quando a Borracha está ativa: mostra 3 tamanhos de borracha */}
         {activeTool === 'eraser' && (
-          <div className="flex items-center gap-1.5 bg-surface/90 px-2.5 py-1 rounded-full border border-[var(--border-subtle)]">
+          <div className="flex items-center gap-1.5 bg-surface px-2.5 py-1 rounded-full border border-[var(--border-subtle)] shadow-xs">
             {[14, 28, 52].map((rad) => (
               <button
                 key={rad}
@@ -550,7 +576,7 @@ export function WritingToolbar({
         )}
       </div>
 
-      {/* ================= POPOVERS CONTEXTUAIS ESTILO GOODNOTES ================= */}
+      {/* ================= POPOVERS CONTEXTUAIS SÓLIDOS ESTILO GOODNOTES ================= */}
 
       {/* Popover da Caneta */}
       {openPopover === 'pen' && (
@@ -559,7 +585,10 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-72 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-76 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs"
+          >
             <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
               Tipo de Ponta da Caneta
             </p>
@@ -591,7 +620,7 @@ export function WritingToolbar({
                   }}
                   className={`w-full p-2.5 rounded-xl flex items-center justify-between text-left transition-colors ${
                     penType === item.id
-                      ? 'bg-accent/10 text-accent font-semibold'
+                      ? 'bg-accent/15 text-accent font-semibold'
                       : 'hover:bg-dock text-primary'
                   }`}
                 >
@@ -602,6 +631,28 @@ export function WritingToolbar({
                   {penType === item.id && <Check className="w-4 h-4" />}
                 </button>
               ))}
+            </div>
+
+            <div className="pt-2 border-t border-[var(--border-subtle)] space-y-2">
+              <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
+                Cores da Caneta
+              </p>
+              <div className="grid grid-cols-6 gap-2">
+                {PEN_COLOR_PALETTE.map((hex) => (
+                  <button
+                    key={hex}
+                    onClick={() => {
+                      onUpdatePenColorSlot(activePenColorSlot, hex);
+                    }}
+                    className={`w-7 h-7 rounded-full border transition-transform ${
+                      currentPenColor === hex
+                        ? 'scale-110 ring-2 ring-accent border-white'
+                        : 'border-black/20 hover:scale-105'
+                    }`}
+                    style={{ backgroundColor: hex }}
+                  />
+                ))}
+              </div>
             </div>
 
             <div className="pt-2 border-t border-[var(--border-subtle)]">
@@ -621,30 +672,85 @@ export function WritingToolbar({
         </>
       )}
 
-      {/* Popover do Marca-Texto */}
+      {/* Popover do Marca-Texto (Com Paleta Completa de 12 Cores + Espessuras + Linha Reta) */}
       {openPopover === 'highlighter' && (
         <>
           <div
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-64 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 text-xs">
-            <label className="flex items-center justify-between cursor-pointer">
-              <div>
-                <p className="font-semibold text-primary">
-                  Desenhar em Linha Reta
-                </p>
-                <p className="text-[10px] text-secondary">
-                  Alinha grifos horizontais automaticamente
-                </p>
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-76 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3.5 text-xs"
+          >
+            <div>
+              <p className="font-semibold text-secondary uppercase tracking-wider text-[10px] mb-2">
+                Cores do Marca-Texto (12 Opções)
+              </p>
+              <div className="grid grid-cols-6 gap-2">
+                {HIGHLIGHTER_COLOR_PALETTE.map((hex) => {
+                  const isCurrent = currentHighlighterColor === hex;
+                  return (
+                    <button
+                      key={hex}
+                      onClick={() => {
+                        onUpdateHighlighterColorSlot(
+                          activeHighlighterColorSlot,
+                          hex
+                        );
+                        setOpenPopover(null);
+                      }}
+                      className={`w-8 h-8 rounded-full border transition-transform flex items-center justify-center ${
+                        isCurrent
+                          ? 'scale-110 ring-2 ring-accent border-white shadow-sm'
+                          : 'border-black/15 hover:scale-105'
+                      }`}
+                      style={{ backgroundColor: hex }}
+                    >
+                      {isCurrent && (
+                        <Check className="w-3.5 h-3.5 text-slate-900 stroke-[2.5]" />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
+            </div>
+
+            <div className="pt-2.5 border-t border-[var(--border-subtle)] flex items-center justify-between">
+              <span className="text-secondary font-medium">
+                Cor Personalizada:
+              </span>
               <input
-                type="checkbox"
-                checked={straightLineHighlighter}
-                onChange={onToggleStraightLineHighlighter}
-                className="w-4 h-4 accent-accent"
+                type="color"
+                value={currentHighlighterColor}
+                onChange={(e) =>
+                  onUpdateHighlighterColorSlot(
+                    activeHighlighterColorSlot,
+                    e.target.value
+                  )
+                }
+                className="w-8 h-7 rounded cursor-pointer bg-transparent"
               />
-            </label>
+            </div>
+
+            <div className="pt-2.5 border-t border-[var(--border-subtle)]">
+              <label className="flex items-center justify-between cursor-pointer">
+                <div>
+                  <p className="font-semibold text-primary">
+                    Desenhar em Linha Reta
+                  </p>
+                  <p className="text-[10px] text-secondary">
+                    Alinha grifos horizontais automaticamente
+                  </p>
+                </div>
+                <input
+                  type="checkbox"
+                  checked={straightLineHighlighter}
+                  onChange={onToggleStraightLineHighlighter}
+                  className="w-4 h-4 accent-accent"
+                />
+              </label>
+            </div>
           </div>
         </>
       )}
@@ -656,7 +762,10 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-72 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-72 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs"
+          >
             <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
               Modo da Borracha
             </p>
@@ -665,7 +774,7 @@ export function WritingToolbar({
                 onClick={() => onChangeEraserMode('stroke')}
                 className={`p-2.5 rounded-xl border text-center font-medium ${
                   eraserMode === 'stroke'
-                    ? 'border-accent bg-accent/10 text-accent'
+                    ? 'border-accent bg-accent/15 text-accent'
                     : 'border-[var(--border-subtle)] text-primary'
                 }`}
               >
@@ -675,7 +784,7 @@ export function WritingToolbar({
                 onClick={() => onChangeEraserMode('precision')}
                 className={`p-2.5 rounded-xl border text-center font-medium ${
                   eraserMode === 'precision'
-                    ? 'border-accent bg-accent/10 text-accent'
+                    ? 'border-accent bg-accent/15 text-accent'
                     : 'border-[var(--border-subtle)] text-primary'
                 }`}
               >
@@ -729,7 +838,10 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-72 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-72 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs"
+          >
             <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
               Tipo de Forma
             </p>
@@ -750,7 +862,7 @@ export function WritingToolbar({
                     onClick={() => onChangeShapeKind(sh.id)}
                     className={`flex flex-col items-center gap-1 p-2 rounded-xl border ${
                       activeShapeKind === sh.id
-                        ? 'border-accent bg-accent/10 text-accent font-semibold'
+                        ? 'border-accent bg-accent/15 text-accent font-semibold'
                         : 'border-[var(--border-subtle)] text-primary hover:bg-dock'
                     }`}
                   >
@@ -785,7 +897,10 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-64 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-2.5 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 left-1/2 -translate-x-1/2 z-50 w-64 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-2.5 text-xs"
+          >
             <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
               Incluir na Seleção do Laço
             </p>
@@ -821,9 +936,14 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 right-6 z-50 w-64 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 right-6 z-50 w-68 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-3 text-xs"
+          >
             <p className="font-semibold text-secondary uppercase tracking-wider text-[10px]">
-              Paleta de Cores (Slot {activeColorSlot + 1})
+              {isHighlighter
+                ? `Cores do Marca-Texto (Slot ${activeColorSlot + 1})`
+                : `Paleta de Cores (Slot ${activeColorSlot + 1})`}
             </p>
             <div className="grid grid-cols-6 gap-2">
               {(isHighlighter
@@ -871,7 +991,10 @@ export function WritingToolbar({
             className="fixed inset-0 z-40"
             onClick={() => setOpenPopover(null)}
           />
-          <div className="absolute top-14 right-4 z-50 w-60 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] p-4 space-y-2 text-xs">
+          <div
+            style={{ backgroundColor: 'var(--bg-surface)' }}
+            className="absolute top-14 right-4 z-50 w-60 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] p-4 space-y-2 text-xs"
+          >
             <div className="flex justify-between">
               <span className="font-semibold text-secondary">
                 Espessura (Slot {activePenSizeSlot + 1})

@@ -61,7 +61,17 @@ export function DocumentWorkspace({
   onCloseTab,
   onBackToLibrary,
 }: DocumentWorkspaceProps) {
-  const sortedPages = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
+  // Cache otimista em memória para atualização instantânea sem esperar o round-trip do IndexedDB
+  const [optimisticPagesMap, setOptimisticPagesMap] = useState<
+    Record<string, PageRecord>
+  >({});
+
+  const sortedPages = [...pages]
+    .map((p) => {
+      const opt = optimisticPagesMap[p.id];
+      return opt && opt.updatedAt >= p.updatedAt ? opt : p;
+    })
+    .sort((a, b) => a.pageNumber - b.pageNumber);
 
   const [currentPageIndex, setCurrentPageIndex] = useState<number>(
     Math.min(
@@ -82,6 +92,8 @@ export function DocumentWorkspace({
 
   const currentPage: PageRecord | undefined =
     sortedPages[currentPageIndex] || sortedPages[0];
+  const currentPageRef = useRef<PageRecord | undefined>(currentPage);
+  currentPageRef.current = currentPage;
 
   // Estado das Ferramentas da Writing Toolbar
   const [activeTool, setActiveTool] = useState<ActiveToolId>('pen');
@@ -182,7 +194,8 @@ export function DocumentWorkspace({
   const redoStackRef = useRef<Record<string, PageRecord[]>>({});
   const [, setHistoryTick] = useState(0);
 
-  // Cache de páginas PDF renderizadas
+  // Cache em memória de páginas PDF já renderizadas (evita re-renderizar ou piscar ao escrever)
+  const pdfRenderCacheRef = useRef<Map<string, string>>(new Map());
   const [pdfPageDataUrl, setPdfPageDataUrl] = useState<string | null>(null);
   const imageInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -190,18 +203,29 @@ export function DocumentWorkspace({
   useEffect(() => {
     let cancelled = false;
     async function loadPdfPage() {
-      if (!activeNotebook.pdfAssetId || !currentPage?.pdfPageIndex) {
+      const pdfAssetId = activeNotebook.pdfAssetId;
+      const pdfPageIndex = currentPage?.pdfPageIndex;
+      if (!pdfAssetId || !pdfPageIndex) {
         setPdfPageDataUrl(null);
         return;
       }
-      const asset = await db.assets.get(activeNotebook.pdfAssetId);
+
+      const cacheKey = `${pdfAssetId}:${pdfPageIndex}`;
+      const cached = pdfRenderCacheRef.current.get(cacheKey);
+      if (cached) {
+        setPdfPageDataUrl(cached);
+        return;
+      }
+
+      const asset = await db.assets.get(pdfAssetId);
       if (!asset || cancelled) return;
       try {
         const rendered = await renderPdfPageFromBuffer(
           asset.data,
-          currentPage.pdfPageIndex,
+          pdfPageIndex,
           1.6
         );
+        pdfRenderCacheRef.current.set(cacheKey, rendered.dataUrl);
         if (!cancelled) {
           setPdfPageDataUrl(rendered.dataUrl);
         }
@@ -215,31 +239,33 @@ export function DocumentWorkspace({
     };
   }, [activeNotebook.pdfAssetId, currentPage?.id, currentPage?.pdfPageIndex]);
 
-  // Função central para atualizar a página atual e persistir no Dexie
+  // Função central para atualizar a página atual instantaneamente em memória e persistir em segundo plano no Dexie
   const handleCommitPageUpdate = useCallback(
     (updater: (prev: PageRecord) => PageRecord, recordHistory = true) => {
-      if (!currentPage) return;
+      const pg = currentPageRef.current;
+      if (!pg) return;
 
-      const updated = updater(currentPage);
-      if (updated === currentPage) return;
+      const updated = updater(pg);
+      if (updated === pg) return;
 
       if (recordHistory) {
-        const list = undoStackRef.current[currentPage.id] || [];
-        undoStackRef.current[currentPage.id] = [
-          ...list.slice(-39),
-          currentPage,
-        ];
-        redoStackRef.current[currentPage.id] = [];
+        const list = undoStackRef.current[pg.id] || [];
+        undoStackRef.current[pg.id] = [...list.slice(-39), pg];
+        redoStackRef.current[pg.id] = [];
         setHistoryTick((t) => t + 1);
       }
 
+      // Atualiza estado otimista sincronicamente (zero latência visual)
+      currentPageRef.current = updated;
+      setOptimisticPagesMap((prev) => ({
+        ...prev,
+        [updated.id]: updated,
+      }));
+
+      // Persiste em segundo plano no IndexedDB
       db.pages.put(updated);
-      db.notebooks.update(activeNotebook.id, {
-        updatedAt: Date.now(),
-        lastOpenedPageIndex: currentPageIndex,
-      });
     },
-    [currentPage, activeNotebook.id, currentPageIndex]
+    []
   );
 
   // Undo & Redo
@@ -251,34 +277,48 @@ export function DocumentWorkspace({
   );
 
   const handleUndo = useCallback(() => {
-    if (!currentPage) return;
-    const uList = undoStackRef.current[currentPage.id] || [];
+    const pg = currentPageRef.current;
+    if (!pg) return;
+    const uList = undoStackRef.current[pg.id] || [];
     if (uList.length === 0) return;
 
     const previousState = uList[uList.length - 1];
-    undoStackRef.current[currentPage.id] = uList.slice(0, -1);
+    undoStackRef.current[pg.id] = uList.slice(0, -1);
 
-    const rList = redoStackRef.current[currentPage.id] || [];
-    redoStackRef.current[currentPage.id] = [...rList, currentPage];
+    const rList = redoStackRef.current[pg.id] || [];
+    redoStackRef.current[pg.id] = [...rList, pg];
     setHistoryTick((t) => t + 1);
 
-    db.pages.put({ ...previousState, updatedAt: Date.now() });
-  }, [currentPage]);
+    const restored = { ...previousState, updatedAt: Date.now() };
+    currentPageRef.current = restored;
+    setOptimisticPagesMap((prev) => ({
+      ...prev,
+      [restored.id]: restored,
+    }));
+    db.pages.put(restored);
+  }, []);
 
   const handleRedo = useCallback(() => {
-    if (!currentPage) return;
-    const rList = redoStackRef.current[currentPage.id] || [];
+    const pg = currentPageRef.current;
+    if (!pg) return;
+    const rList = redoStackRef.current[pg.id] || [];
     if (rList.length === 0) return;
 
     const nextState = rList[rList.length - 1];
-    redoStackRef.current[currentPage.id] = rList.slice(0, -1);
+    redoStackRef.current[pg.id] = rList.slice(0, -1);
 
-    const uList = undoStackRef.current[currentPage.id] || [];
-    undoStackRef.current[currentPage.id] = [...uList, currentPage];
+    const uList = undoStackRef.current[pg.id] || [];
+    undoStackRef.current[pg.id] = [...uList, pg];
     setHistoryTick((t) => t + 1);
 
-    db.pages.put({ ...nextState, updatedAt: Date.now() });
-  }, [currentPage]);
+    const restored = { ...nextState, updatedAt: Date.now() };
+    currentPageRef.current = restored;
+    setOptimisticPagesMap((prev) => ({
+      ...prev,
+      [restored.id]: restored,
+    }));
+    db.pages.put(restored);
+  }, []);
 
   // Atalhos de Teclado no Editor
   useEffect(() => {

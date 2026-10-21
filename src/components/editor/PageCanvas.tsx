@@ -303,7 +303,12 @@ export function PageCanvas({
     [pageW, pageH]
   );
 
-  // 1. Renderiza Camada 1: Papel Vetorial ou Página de PDF (somente quando template ou PDF mudam)
+  // Cache de imagem PDF decodificada para nunca piscar o fundo ao redesenhar
+  const cachedPdfImgRef = useRef<{ url: string; img: HTMLImageElement } | null>(
+    null
+  );
+
+  // 1. Renderiza Camada 1: Papel Vetorial ou Página de PDF (sem nunca limpar antes do decode do PDF)
   useEffect(() => {
     const canvas = bgCanvasRef.current;
     if (!canvas) return;
@@ -311,74 +316,103 @@ export function PageCanvas({
     if (!ctx) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = pageW * dpr;
-    canvas.height = pageH * dpr;
+    const targetW = Math.round(pageW * dpr);
+    const targetH = Math.round(pageH * dpr);
 
-    ctx.save();
-    ctx.scale(dpr, dpr);
-    renderPaperTemplate(ctx, pageW, pageH, page.template, page.paperColor);
+    const drawBackground = (pdfImg: HTMLImageElement | null) => {
+      const c = bgCanvasRef.current;
+      if (!c) return;
+      const cCtx = c.getContext('2d');
+      if (!cCtx) return;
+      if (c.width !== targetW || c.height !== targetH) {
+        c.width = targetW;
+        c.height = targetH;
+      }
+      cCtx.save();
+      cCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      renderPaperTemplate(cCtx, pageW, pageH, page.template, page.paperColor);
+      if (pdfImg) {
+        cCtx.drawImage(pdfImg, 0, 0, pageW, pageH);
+      }
+      cCtx.restore();
+    };
 
-    if (pdfPageDataUrl) {
-      const img = new window.Image();
-      img.onload = () => {
-        const c = bgCanvasRef.current;
-        if (!c) return;
-        const cCtx = c.getContext('2d');
-        if (!cCtx) return;
-        cCtx.save();
-        cCtx.scale(dpr, dpr);
-        cCtx.drawImage(img, 0, 0, pageW, pageH);
-        cCtx.restore();
-      };
-      img.src = pdfPageDataUrl;
+    if (!pdfPageDataUrl) {
+      drawBackground(null);
+      return;
     }
 
-    ctx.restore();
+    if (cachedPdfImgRef.current?.url === pdfPageDataUrl) {
+      drawBackground(cachedPdfImgRef.current.img);
+      return;
+    }
+
+    let cancelled = false;
+    const img = new window.Image();
+    img.onload = () => {
+      if (cancelled) return;
+      cachedPdfImgRef.current = { url: pdfPageDataUrl, img };
+      drawBackground(img);
+    };
+    img.src = pdfPageDataUrl;
+
+    return () => {
+      cancelled = true;
+    };
   }, [page.template, page.paperColor, pageW, pageH, pdfPageDataUrl]);
 
   // 2. Renderiza Camada 2: Traços Finalizados (Marca-Texto embaixo + Formas + Caneta em cima)
+  const drawStaticLayerWith = useCallback(
+    (strokesList: StrokeElement[], shapesList: ShapeElement[]) => {
+      const canvas = staticCanvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const targetW = Math.round(pageW * dpr);
+      const targetH = Math.round(pageH * dpr);
+      if (canvas.width !== targetW || canvas.height !== targetH) {
+        canvas.width = targetW;
+        canvas.height = targetH;
+      }
+
+      ctx.save();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, pageW, pageH);
+
+      // 2.1. Marca-texto (abaixo da tinta com blend multiply para preservar contraste)
+      ctx.save();
+      if (page.paperColor !== 'dark') {
+        ctx.globalCompositeOperation = 'multiply';
+      }
+      for (const stroke of strokesList) {
+        if (stroke.tool === 'highlighter') {
+          drawStrokeOnCanvas(ctx, stroke);
+        }
+      }
+      ctx.restore();
+
+      // 2.2. Formas Geométricas
+      for (const shape of shapesList) {
+        drawShapeOnCanvas(ctx, shape);
+      }
+
+      // 2.3. Tinta de Caneta
+      for (const stroke of strokesList) {
+        if (stroke.tool === 'pen') {
+          drawStrokeOnCanvas(ctx, stroke);
+        }
+      }
+
+      ctx.restore();
+    },
+    [page.paperColor, pageW, pageH]
+  );
+
   const renderStaticLayer = useCallback(() => {
-    const canvas = staticCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    if (canvas.width !== pageW * dpr || canvas.height !== pageH * dpr) {
-      canvas.width = pageW * dpr;
-      canvas.height = pageH * dpr;
-    }
-
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, pageW, pageH);
-
-    // 2.1. Marca-texto (abaixo da tinta com blend multiply para preservar contraste)
-    ctx.save();
-    if (page.paperColor !== 'dark') {
-      ctx.globalCompositeOperation = 'multiply';
-    }
-    for (const stroke of page.strokes) {
-      if (stroke.tool === 'highlighter') {
-        drawStrokeOnCanvas(ctx, stroke);
-      }
-    }
-    ctx.restore();
-
-    // 2.2. Formas Geométricas
-    for (const shape of page.shapes) {
-      drawShapeOnCanvas(ctx, shape);
-    }
-
-    // 2.3. Tinta de Caneta
-    for (const stroke of page.strokes) {
-      if (stroke.tool === 'pen') {
-        drawStrokeOnCanvas(ctx, stroke);
-      }
-    }
-
-    ctx.restore();
-  }, [page.strokes, page.shapes, page.paperColor, pageW, pageH]);
+    drawStaticLayerWith(page.strokes, page.shapes);
+  }, [drawStaticLayerWith, page.strokes, page.shapes]);
 
   useEffect(() => {
     renderStaticLayer();
@@ -1070,13 +1104,15 @@ export function PageCanvas({
     if (activeTool === 'shape' && draftShapeRef.current) {
       const committedShape = draftShapeRef.current;
       draftShapeRef.current = null;
-      flushWetLayerRender();
       if (
         Math.hypot(
           committedShape.x2 - committedShape.x1,
           committedShape.y2 - committedShape.y1
         ) > 6
       ) {
+        // Desenha imediatamente na camada estática ANTES de limpar a camada ativa (zero piscada)
+        drawStaticLayerWith(page.strokes, [...page.shapes, committedShape]);
+        flushWetLayerRender();
         onCommitPageUpdate(
           (prev) => ({
             ...prev,
@@ -1085,6 +1121,8 @@ export function PageCanvas({
           }),
           true
         );
+      } else {
+        flushWetLayerRender();
       }
       return;
     }
@@ -1202,6 +1240,8 @@ export function PageCanvas({
         const finalShape = snappedShapeRef.current;
         snappedShapeRef.current = null;
         activePointsRef.current = [];
+        // Desenha imediatamente na camada estática ANTES de limpar a camada ativa (zero piscada)
+        drawStaticLayerWith(page.strokes, [...page.shapes, finalShape]);
         flushWetLayerRender();
         onCommitPageUpdate(
           (prev) => ({
@@ -1216,9 +1256,11 @@ export function PageCanvas({
 
       const pts = activePointsRef.current;
       activePointsRef.current = [];
-      flushWetLayerRender();
 
-      if (pts.length === 0) return;
+      if (pts.length === 0) {
+        flushWetLayerRender();
+        return;
+      }
 
       const isHl = activeTool === 'highlighter';
       const size = isHl ? highlighterSize : penSize;
@@ -1232,6 +1274,10 @@ export function PageCanvas({
         points: pts,
         bbox: computeBoundingBox(pts, size),
       };
+
+      // Transfere o traço sincronicamente para a camada estática ANTES de limpar a camada ativa (zero piscada!)
+      drawStaticLayerWith([...page.strokes, newStroke], page.shapes);
+      flushWetLayerRender();
 
       onCommitPageUpdate(
         (prev) => ({
