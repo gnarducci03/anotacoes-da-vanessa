@@ -304,6 +304,31 @@ export function PageCanvas({
   const wetRenderRafRef = useRef<number | null>(null);
   const drawingPointerIdRef = useRef<number | null>(null);
   const drawingPointerTypeRef = useRef<string | null>(null);
+  const lastPenTimestampRef = useRef<number>(0);
+
+  // Limpa ponteiros de toque residuais caso o dedo solte fora do canvas
+  useEffect(() => {
+    const cleanPointer = (ev: PointerEvent) => {
+      if (ev.pointerType === 'touch') {
+        activePointersRef.current.delete(ev.pointerId);
+        if (activePointersRef.current.size < 2) {
+          pinchInitialDistRef.current = null;
+          pinchInitialCenterRef.current = null;
+          elementPinchRef.current = null;
+        }
+        if (activePointersRef.current.size === 0) {
+          panStartRef.current = null;
+          multiTouchCountRef.current = 0;
+        }
+      }
+    };
+    window.addEventListener('pointerup', cleanPointer);
+    window.addEventListener('pointercancel', cleanPointer);
+    return () => {
+      window.removeEventListener('pointerup', cleanPointer);
+      window.removeEventListener('pointercancel', cleanPointer);
+    };
+  }, []);
 
   // Invalida o cache do retângulo sempre que o zoom, pan ou tamanho da página mudar
   useEffect(() => {
@@ -509,6 +534,12 @@ export function PageCanvas({
     if (!ctx) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const targetW = Math.round(pageW * dpr);
+    const targetH = Math.round(pageH * dpr);
+    if (canvas.width !== targetW || canvas.height !== targetH) {
+      canvas.width = targetW;
+      canvas.height = targetH;
+    }
 
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -525,7 +556,7 @@ export function PageCanvas({
         penType,
         color: isHl ? highlighterColor : penColor,
         size: isHl ? highlighterSize : penSize,
-        opacity: isHl ? 0.35 : 1,
+        opacity: isHl ? 0.42 : 1,
         points: activePointsRef.current,
         bbox: { minX: 0, minY: 0, maxX: pageW, maxY: pageH },
       });
@@ -602,13 +633,6 @@ export function PageCanvas({
     pageW,
     pageH,
   ]);
-
-  // Agenda renderização da camada ativa sincronizada com o quadro de 120Hz (evita bloquear eventos intermediários)
-  const scheduleWetLayerRender = useCallback(() => {
-    if (wetRenderRafRef.current === null) {
-      wetRenderRafRef.current = requestAnimationFrame(renderActiveWetLayer);
-    }
-  }, [renderActiveWetLayer]);
 
   const flushWetLayerRender = useCallback(() => {
     if (wetRenderRafRef.current !== null) {
@@ -724,7 +748,7 @@ export function PageCanvas({
 
   // ================= HANDLERS DE POINTER EVENTS (STYLUS, TOUCH, MOUSE) =================
 
-  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
     // 1. Se a caneta (stylus) já está desenhando na tela, bloqueia 100% qualquer toque de mão/palma
     if (
       e.pointerType === 'touch' &&
@@ -842,34 +866,6 @@ export function PageCanvas({
         return;
       }
 
-      // 1 dedo tocou na página (quando não está usando Borracha ou Laço): verifica se tocou em cima de uma Caixa de Texto ou Post-it/Sticker para selecioná-lo!
-      if (activeTool !== 'eraser' && activeTool !== 'lasso') {
-        for (let i = page.textBoxes.length - 1; i >= 0; i--) {
-          const tb = page.textBoxes[i];
-          if (
-            pt.x >= tb.x &&
-            pt.x <= tb.x + tb.width &&
-            pt.y >= tb.y &&
-            pt.y <= tb.y + tb.height
-          ) {
-            setSelectedElement({ kind: 'textBox', id: tb.id });
-            return;
-          }
-        }
-        for (let i = page.images.length - 1; i >= 0; i--) {
-          const im = page.images[i];
-          if (
-            pt.x >= im.x &&
-            pt.x <= im.x + im.width &&
-            pt.y >= im.y &&
-            pt.y <= im.y + im.height
-          ) {
-            setSelectedElement({ kind: 'image', id: im.id });
-            return;
-          }
-        }
-      }
-
       // Se a ferramenta ativa for Caixa de Texto ('text'), Borracha ('eraser') ou Laço ('lasso'), permite operar com o dedo mesmo no modo Só Caneta!
       if (
         stylusOnlyMode &&
@@ -884,6 +880,7 @@ export function PageCanvas({
 
     // 3. Se a caneta tocou na tela, cancela imediatamente qualquer pan/pinch residual de toque da mão
     if (e.pointerType === 'pen') {
+      lastPenTimestampRef.current = performance.now();
       activePointersRef.current.clear();
       multiTouchCountRef.current = 0;
       pinchInitialDistRef.current = null;
@@ -893,40 +890,6 @@ export function PageCanvas({
     }
 
     if (activeTool === 'readonly') return;
-
-    // Se clicou com mouse (fora de Borracha/Laço) ou se está na ferramenta 'text'/'image', verifica se clicou em um Post-it/Sticker ou TextBox existente
-    if (
-      (e.pointerType === 'mouse' &&
-        activeTool !== 'eraser' &&
-        activeTool !== 'lasso') ||
-      activeTool === 'text' ||
-      activeTool === 'image'
-    ) {
-      for (let i = page.textBoxes.length - 1; i >= 0; i--) {
-        const tb = page.textBoxes[i];
-        if (
-          pt.x >= tb.x &&
-          pt.x <= tb.x + tb.width &&
-          pt.y >= tb.y &&
-          pt.y <= tb.y + tb.height
-        ) {
-          setSelectedElement({ kind: 'textBox', id: tb.id });
-          return;
-        }
-      }
-      for (let i = page.images.length - 1; i >= 0; i--) {
-        const im = page.images[i];
-        if (
-          pt.x >= im.x &&
-          pt.x <= im.x + im.width &&
-          pt.y >= im.y &&
-          pt.y <= im.y + im.height
-        ) {
-          setSelectedElement({ kind: 'image', id: im.id });
-          return;
-        }
-      }
-    }
 
     // Se já houver outro ponteiro desenhando (ex.: dedo enquanto outro dedo toca), ignora
     if (
@@ -942,7 +905,29 @@ export function PageCanvas({
       setLassoSelection(null);
       setLassoColorMenuOpen(false);
     }
-    setSelectedElement(null);
+
+    // Se já havia uma Caixa de Texto ou Post-it selecionado e o usuário tocou fora na folha:
+    // Primeiro desmarca o item (e limpa caixas de texto vazias) sem criar outra caixa por acidente!
+    if (selectedElement) {
+      const prevSel = selectedElement;
+      setSelectedElement(null);
+      if (prevSel.kind === 'textBox') {
+        const prevTb = page.textBoxes.find((t) => t.id === prevSel.id);
+        if (prevTb && prevTb.text.trim().length === 0) {
+          onCommitPageUpdate(
+            (prev) => ({
+              ...prev,
+              textBoxes: prev.textBoxes.filter((t) => t.id !== prevSel.id),
+              updatedAt: Date.now(),
+            }),
+            false
+          );
+        }
+      }
+      if (activeTool === 'text') {
+        return;
+      }
+    }
 
     // Ferramenta Caixa de Texto: cria nova caixa no ponto clicado e dá foco imediato ao teclado
     if (activeTool === 'text') {
@@ -1055,8 +1040,8 @@ export function PageCanvas({
       snappedShapeRef.current = null;
       const pressure =
         e.pointerType === 'pen'
-          ? Math.max(0.1, e.pressure || 0.5)
-          : 0.5;
+          ? Math.max(0.15, e.pressure || 0.65)
+          : 0.65;
       activePointsRef.current = [
         {
           x: pt.x,
@@ -1070,7 +1055,11 @@ export function PageCanvas({
     }
   };
 
-  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const handlePointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'pen') {
+      lastPenTimestampRef.current = performance.now();
+    }
+
     // Se a caneta está desenhando, ignora qualquer movimento de toque da mão/palma
     if (
       e.pointerType === 'touch' &&
@@ -1168,6 +1157,40 @@ export function PageCanvas({
       }
     }
 
+    // Se a caneta (stylus) já está encostada na tela movendo-se (e o evento pointerdown foi engolido pela troca de palma do tablet),
+    // inicia o traço automaticamente no próprio pointermove para nunca falhar na primeira passada!
+    if (
+      !isDrawingRef.current &&
+      e.pointerType === 'pen' &&
+      (e.buttons > 0 || e.pressure > 0.002) &&
+      (activeTool === 'pen' ||
+        activeTool === 'highlighter' ||
+        activeTool === 'eraser')
+    ) {
+      cachedCanvasRectRef.current = e.currentTarget.getBoundingClientRect();
+      const startPt = clientToPageCoords(e.clientX, e.clientY);
+      drawingPointerIdRef.current = e.pointerId;
+      drawingPointerTypeRef.current = 'pen';
+      isDrawingRef.current = true;
+      snappedShapeRef.current = null;
+      if (activeTool === 'eraser') {
+        didEraseDuringStrokeRef.current = false;
+        applyEraserAt(startPt.x, startPt.y);
+        return;
+      }
+      activePointsRef.current = [
+        {
+          x: startPt.x,
+          y: startPt.y,
+          pressure: Math.max(0.15, e.pressure || 0.65),
+          tiltX: e.tiltX,
+          tiltY: e.tiltY,
+        },
+      ];
+      flushWetLayerRender();
+      return;
+    }
+
     // Só processa desenho se este evento vier exatamente do ponteiro ativo de escrita
     if (!isDrawingRef.current || e.pointerId !== drawingPointerIdRef.current) {
       return;
@@ -1186,13 +1209,13 @@ export function PageCanvas({
         x2: pt.x,
         y2: pt.y,
       };
-      scheduleWetLayerRender();
+      flushWetLayerRender();
       return;
     }
 
     if (activeTool === 'lasso') {
       lassoPointsRef.current.push(pt);
-      scheduleWetLayerRender();
+      flushWetLayerRender();
       return;
     }
 
@@ -1213,7 +1236,7 @@ export function PageCanvas({
           x2: pt.x,
           y2: pt.y,
         };
-        scheduleWetLayerRender();
+        flushWetLayerRender();
         return;
       }
 
@@ -1230,8 +1253,8 @@ export function PageCanvas({
           const cPt = clientToPageCoords(ce.clientX, ce.clientY);
           const pressure =
             ce.pointerType === 'pen'
-              ? Math.max(0.08, ce.pressure || 0.5)
-              : 0.5;
+              ? Math.max(0.15, ce.pressure || 0.65)
+              : 0.65;
 
           if (
             activeTool === 'highlighter' &&
@@ -1241,7 +1264,7 @@ export function PageCanvas({
             const start = activePointsRef.current[0];
             activePointsRef.current = [
               start,
-              { x: cPt.x, y: start.y, pressure: 0.5 },
+              { x: cPt.x, y: start.y, pressure: 0.65 },
             ];
           } else {
             activePointsRef.current.push({
@@ -1256,8 +1279,8 @@ export function PageCanvas({
       } else {
         const pressure =
           e.pointerType === 'pen'
-            ? Math.max(0.08, e.pressure || 0.5)
-            : 0.5;
+            ? Math.max(0.15, e.pressure || 0.65)
+            : 0.65;
         if (
           activeTool === 'highlighter' &&
           straightLineHighlighter &&
@@ -1266,7 +1289,7 @@ export function PageCanvas({
           const start = activePointsRef.current[0];
           activePointsRef.current = [
             start,
-            { x: pt.x, y: start.y, pressure: 0.5 },
+            { x: pt.x, y: start.y, pressure: 0.65 },
           ];
         } else {
           activePointsRef.current.push({
@@ -1279,7 +1302,8 @@ export function PageCanvas({
         }
       }
 
-      scheduleWetLayerRender();
+      // Renderiza a camada de tinta ativa sincronicamente (latência 0ms para caneta e marca-texto!)
+      flushWetLayerRender();
 
       // Reinicia o timer de Hold-to-Snap Shape (420ms parado no final do traço)
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
@@ -1487,7 +1511,7 @@ export function PageCanvas({
         penType,
         color: isHl ? highlighterColor : penColor,
         size,
-        opacity: isHl ? 0.35 : 1,
+        opacity: isHl ? 0.42 : 1,
         points: pts,
         bbox: computeBoundingBox(pts, size),
       };
@@ -1508,8 +1532,10 @@ export function PageCanvas({
   };
 
   const handlePointerUpOrCancel = (
-    e: React.PointerEvent<HTMLCanvasElement>
+    e: React.PointerEvent<HTMLElement>
   ) => {
+    const isCancel = e.type === 'pointercancel';
+
     if (e.pointerType === 'touch') {
       activePointersRef.current.delete(e.pointerId);
 
@@ -1521,8 +1547,13 @@ export function PageCanvas({
         return;
       }
 
-      // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo) apenas se os dedos não arrastaram a tela
-      if (activePointersRef.current.size === 0 && multiTouchCountRef.current >= 2) {
+      // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo) APENAS em pointerup real (nunca em pointercancel de rejeição de palma!)
+      if (
+        !isCancel &&
+        activePointersRef.current.size === 0 &&
+        multiTouchCountRef.current >= 2 &&
+        performance.now() - lastPenTimestampRef.current > 1000
+      ) {
         const elapsed = performance.now() - multiTouchStartTimeRef.current;
         const movedDist = Math.hypot(
           pan.x - pinchInitialPanRef.current.x,
@@ -1547,6 +1578,7 @@ export function PageCanvas({
       }
       if (activePointersRef.current.size === 0) {
         panStartRef.current = null;
+        multiTouchCountRef.current = 0;
       }
     }
 
@@ -1879,8 +1911,23 @@ export function PageCanvas({
           className="absolute inset-0 z-0 pointer-events-none rounded-[3px]"
         />
 
-        {/* CAMADA 2: Post-its, Figurinhas e Imagens (abaixo da tinta de caneta para permitir escrever por cima com a stylus!) */}
-        <div className="absolute inset-0 z-10 pointer-events-none">
+        {/* SUPERFÍCIE DE INTERAÇÃO DE ESCRITA (Z-[5] - Captura Caneta, Marca-Texto, Borracha, Laço sem bloquear Post-its/TextBoxes!) */}
+        <div
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUpOrCancel}
+          onPointerCancel={handlePointerUpOrCancel}
+          className={`absolute inset-0 z-[5] ${
+            activeTool === 'eraser'
+              ? 'cursor-none'
+              : activeTool === 'text'
+              ? 'cursor-text'
+              : 'cursor-crosshair'
+          }`}
+        />
+
+        {/* CAMADA 2: Post-its, Figurinhas e Imagens (sem z-index no wrapper para que cada item controle seu próprio zIndex!) */}
+        <div className="absolute inset-0 pointer-events-none">
           {page.images.map((im) => {
             const isSelected =
               selectedElement?.kind === 'image' && selectedElement.id === im.id;
@@ -1888,12 +1935,14 @@ export function PageCanvas({
             const isBadge =
               (im.label || '').toLowerCase().includes('prova') ||
               (im.label || '').toLowerCase().includes('importante');
+            const toolbarScale = Math.min(1.4, Math.max(0.95, +(1 / zoom).toFixed(2)));
 
             const startResizeImage = (
               e: React.PointerEvent,
               dirX: -1 | 0 | 1,
               dirY: -1 | 0 | 1
             ) => {
+              e.preventDefault();
               e.stopPropagation();
               const startX = e.clientX;
               const startY = e.clientY;
@@ -1901,6 +1950,7 @@ export function PageCanvas({
               const origH = im.height;
               const origX = im.x;
               const origY = im.y;
+              let latestPatch: Partial<ImageElement> | null = null;
 
               const onMove = (me: PointerEvent) => {
                 const dx = (me.clientX - startX) / zoom;
@@ -1930,19 +1980,77 @@ export function PageCanvas({
                   }
                 }
 
-                updateImageElement(im.id, {
+                latestPatch = {
                   x: Math.round(nextX),
                   y: Math.round(nextY),
                   width: Math.round(nextW),
                   height: Math.round(nextH),
-                });
+                };
+                updateImageElement(im.id, latestPatch, false);
               };
               const onUp = () => {
                 window.removeEventListener('pointermove', onMove);
                 window.removeEventListener('pointerup', onUp);
+                window.removeEventListener('pointercancel', onUp);
+                if (latestPatch) {
+                  updateImageElement(im.id, latestPatch, true);
+                }
               };
               window.addEventListener('pointermove', onMove);
               window.addEventListener('pointerup', onUp);
+              window.addEventListener('pointercancel', onUp);
+            };
+
+            const startDragOrTapImage = (e: React.PointerEvent) => {
+              if (activeTool === 'eraser' || activeTool === 'lasso') {
+                return;
+              }
+              if ((e.target as HTMLElement)?.closest('button')) {
+                return;
+              }
+              e.stopPropagation();
+              setSelectedElement({ kind: 'image', id: im.id });
+
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const origX = im.x;
+              const origY = im.y;
+              let hasMoved = false;
+              let latestPos: { x: number; y: number } | null = null;
+
+              const onMove = (me: PointerEvent) => {
+                const rawDx = me.clientX - startX;
+                const rawDy = me.clientY - startY;
+                if (!hasMoved && Math.hypot(rawDx, rawDy) > 5) {
+                  hasMoved = true;
+                  if (document.activeElement instanceof HTMLElement) {
+                    document.activeElement.blur();
+                  }
+                }
+                if (hasMoved) {
+                  latestPos = {
+                    x: Math.round(origX + rawDx / zoom),
+                    y: Math.round(origY + rawDy / zoom),
+                  };
+                  updateImageElement(im.id, latestPos, false);
+                }
+              };
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                window.removeEventListener('pointercancel', onUp);
+                if (hasMoved && latestPos) {
+                  updateImageElement(im.id, latestPos, true);
+                } else if (!hasMoved) {
+                  const el = document.querySelector<HTMLTextAreaElement>(
+                    `textarea[data-sticker-id="${im.id}"]`
+                  );
+                  if (el) el.focus();
+                }
+              };
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onUp);
+              window.addEventListener('pointercancel', onUp);
             };
 
             return (
@@ -1954,54 +2062,12 @@ export function PageCanvas({
                   width: `${im.width}px`,
                   height: `${im.height}px`,
                   transform: `rotate(${im.rotation || 0}deg)`,
-                  zIndex: isSelected ? 40 : 10,
+                  zIndex: isSelected ? 45 : 15,
                 }}
-                onPointerDown={(e) => {
-                  // Se o usuário tocar com a CANETA (pen) usando Caneta, Marca-Texto, Borracha ou Forma e não clicou em um controle,
-                  // deixa o evento passar para o canvas para escrever/desenhar livremente em cima do Post-it!
-                  if (
-                    e.pointerType === 'pen' &&
-                    !isSelected &&
-                    (activeTool === 'pen' ||
-                      activeTool === 'highlighter' ||
-                      activeTool === 'eraser' ||
-                      activeTool === 'shape' ||
-                      activeTool === 'laser')
-                  ) {
-                    return;
-                  }
-
-                  e.stopPropagation();
-                  setSelectedElement({ kind: 'image', id: im.id });
-
-                  // Se clicou dentro do textarea para digitar, não inicia drag do bloco
-                  if ((e.target as HTMLElement)?.tagName === 'TEXTAREA') {
-                    return;
-                  }
-
-                  const startX = e.clientX;
-                  const startY = e.clientY;
-                  const origX = im.x;
-                  const origY = im.y;
-
-                  const onMove = (me: PointerEvent) => {
-                    const dx = (me.clientX - startX) / zoom;
-                    const dy = (me.clientY - startY) / zoom;
-                    updateImageElement(im.id, {
-                      x: Math.round(origX + dx),
-                      y: Math.round(origY + dy),
-                    });
-                  };
-                  const onUp = () => {
-                    window.removeEventListener('pointermove', onMove);
-                    window.removeEventListener('pointerup', onUp);
-                  };
-                  window.addEventListener('pointermove', onMove);
-                  window.addEventListener('pointerup', onUp);
-                }}
-                className={`absolute select-none group ${
+                onPointerDown={startDragOrTapImage}
+                className={`absolute select-none group cursor-move ${
                   isSelected
-                    ? 'pointer-events-auto ring-2 ring-accent shadow-xl rounded-lg'
+                    ? 'pointer-events-auto ring-2 ring-accent shadow-2xl rounded-lg'
                     : activeTool === 'eraser' || activeTool === 'lasso'
                     ? 'pointer-events-none'
                     : 'pointer-events-auto hover:ring-1 hover:ring-accent/40'
@@ -2017,7 +2083,7 @@ export function PageCanvas({
                   }`}
                 />
 
-                {/* Área de Texto Editável dentro do Post-it / Figurinha (permite digitar dentro de Post-its, Importante, Cai na Prova, etc.) */}
+                {/* Área de Texto Editável dentro do Post-it / Figurinha (permite arrastar o bloco ou tocar para digitar) */}
                 <textarea
                   data-sticker-id={im.id}
                   value={im.text || ''}
@@ -2025,7 +2091,7 @@ export function PageCanvas({
                     updateImageElement(im.id, { text: e.target.value })
                   }
                   placeholder={
-                    isSelected ? 'Toque para digitar ou escreva com a caneta...' : ''
+                    isSelected ? 'Toque para digitar ou arraste para mover...' : ''
                   }
                   style={{
                     fontSize: `${im.fontSize || 15}px`,
@@ -2036,35 +2102,88 @@ export function PageCanvas({
                   }}
                   className={`absolute inset-0 w-full h-full bg-transparent resize-none px-3 pb-2 focus:outline-none font-medium leading-snug ${
                     isSelected && activeTool !== 'eraser' && activeTool !== 'lasso'
-                      ? 'pointer-events-auto'
+                      ? 'pointer-events-auto cursor-move focus:cursor-text'
                       : 'pointer-events-none'
                   }`}
                 />
 
                 {isSelected && (
                   <>
-                    {/* Barra Flutuante Superior do Post-it / Figurinha estilo GoodNotes */}
-                    <div
-                      style={{ backgroundColor: 'var(--bg-surface)' }}
-                      onPointerDown={(e) => e.stopPropagation()}
-                      className="absolute -top-12 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-2xl px-2.5 py-1.5 text-xs whitespace-nowrap z-50"
+                    {/* Botão Rápido de Excluir no Canto Superior Direito */}
+                    <button
+                      type="button"
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        deleteImageElement(im.id);
+                      }}
+                      className="absolute -top-3.5 -right-3.5 w-7 h-7 rounded-full bg-[#FF3B30] text-white flex items-center justify-center shadow-lg border-2 border-white z-50 hover:scale-110 transition-transform cursor-pointer"
+                      title="Excluir Post-it / Figurinha"
                     >
+                      <X className="w-4 h-4 stroke-[2.5]" />
+                    </button>
+
+                    {/* Barra Flutuante Superior do Post-it / Figurinha estilo GoodNotes (Escala adaptativa ao zoom do tablet) */}
+                    <div
+                      style={{
+                        backgroundColor: 'var(--bg-surface)',
+                        transform: `translateX(-50%) scale(${toolbarScale})`,
+                        transformOrigin: 'bottom center',
+                      }}
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        if ((e.target as HTMLElement)?.closest('button')) {
+                          return;
+                        }
+                        const startX = e.clientX;
+                        const startY = e.clientY;
+                        const origX = im.x;
+                        const origY = im.y;
+                        let latestPos: { x: number; y: number } | null = null;
+                        const onMove = (me: PointerEvent) => {
+                          latestPos = {
+                            x: Math.round(origX + (me.clientX - startX) / zoom),
+                            y: Math.round(origY + (me.clientY - startY) / zoom),
+                          };
+                          updateImageElement(im.id, latestPos, false);
+                        };
+                        const onUp = () => {
+                          window.removeEventListener('pointermove', onMove);
+                          window.removeEventListener('pointerup', onUp);
+                          window.removeEventListener('pointercancel', onUp);
+                          if (latestPos) {
+                            updateImageElement(im.id, latestPos, true);
+                          }
+                        };
+                        window.addEventListener('pointermove', onMove);
+                        window.addEventListener('pointerup', onUp);
+                        window.addEventListener('pointercancel', onUp);
+                      }}
+                      className="absolute -top-13 left-1/2 flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-2xl px-2.5 py-1.5 text-xs whitespace-nowrap z-50 cursor-move"
+                    >
+                      <span className="px-1.5 py-0.5 text-[10px] font-bold text-secondary select-none cursor-move">
+                        ⋮⋮ Mover
+                      </span>
                       <button
                         type="button"
-                        onClick={() => {
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           const el = document.querySelector<HTMLTextAreaElement>(
                             `textarea[data-sticker-id="${im.id}"]`
                           );
                           if (el) el.focus();
                         }}
-                        className="px-2 py-1 rounded-lg bg-accent/15 text-accent font-semibold hover:bg-accent/25"
+                        className="px-2 py-1 rounded-lg bg-accent/15 text-accent font-semibold hover:bg-accent/25 cursor-pointer"
                         title="Digitar texto dentro da figurinha/post-it"
                       >
                         Digitar
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           updateImageElement(
                             im.id,
                             {
@@ -2072,16 +2191,18 @@ export function PageCanvas({
                               height: Math.max(36, Math.round(im.height * 0.85)),
                             },
                             true
-                          )
-                        }
-                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold"
+                          );
+                        }}
+                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold cursor-pointer"
                         title="Diminuir tamanho (-15%)"
                       >
                         - Tam
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           updateImageElement(
                             im.id,
                             {
@@ -2089,62 +2210,70 @@ export function PageCanvas({
                               height: Math.min(pageH - 20, Math.round(im.height * 1.15)),
                             },
                             true
-                          )
-                        }
-                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold"
+                          );
+                        }}
+                        className="px-2 py-1 rounded-lg hover:bg-dock text-primary font-bold cursor-pointer"
                         title="Aumentar tamanho (+15%)"
                       >
                         + Tam
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           updateImageElement(
                             im.id,
                             {
                               fontSize: Math.max(10, (im.fontSize || 15) - 2),
                             },
                             true
-                          )
-                        }
-                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold"
+                          );
+                        }}
+                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold cursor-pointer"
                         title="Diminuir fonte do texto"
                       >
                         A-
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           updateImageElement(
                             im.id,
                             {
                               fontSize: Math.min(42, (im.fontSize || 15) + 2),
                             },
                             true
-                          )
-                        }
-                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold"
+                          );
+                        }}
+                        className="px-1.5 py-1 rounded-lg hover:bg-dock text-secondary font-semibold cursor-pointer"
                         title="Aumentar fonte do texto"
                       >
                         A+
                       </button>
                       <button
                         type="button"
-                        onClick={() =>
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           updateImageElement(
                             im.id,
                             { rotation: ((im.rotation || 0) + 15) % 360 },
                             true
-                          )
-                        }
-                        className="p-1.5 rounded-lg hover:bg-dock text-primary"
+                          );
+                        }}
+                        className="p-1.5 rounded-lg hover:bg-dock text-primary cursor-pointer"
                         title="Girar +15°"
                       >
                         <RotateCw className="w-3.5 h-3.5" />
                       </button>
                       <button
                         type="button"
-                        onClick={() => {
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
                           const newId = createId('img');
                           onCommitPageUpdate(
                             (prev) => ({
@@ -2164,28 +2293,33 @@ export function PageCanvas({
                           );
                           setSelectedElement({ kind: 'image', id: newId });
                         }}
-                        className="p-1.5 rounded-lg hover:bg-dock text-primary"
+                        className="p-1.5 rounded-lg hover:bg-dock text-primary cursor-pointer"
                         title="Duplicar figurinha"
                       >
                         <Copy className="w-3.5 h-3.5" />
                       </button>
                       <button
                         type="button"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
+                        onPointerDown={(e) => {
+                          e.preventDefault();
                           e.stopPropagation();
                           deleteImageElement(im.id);
                         }}
-                        className="p-1.5 rounded-lg hover:bg-red-500/15 text-[#FF3B30]"
+                        className="px-2 py-1 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-[#FF3B30] font-bold flex items-center gap-1 cursor-pointer"
                         title="Excluir figurinha"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
+                        <span>Excluir</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() => setSelectedElement(null)}
-                        className="px-2 py-1 rounded-lg bg-accent text-white font-semibold ml-0.5"
-                        title="Fixar e voltar a escrever por cima"
+                        onPointerDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setSelectedElement(null);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-accent text-white font-semibold ml-0.5 cursor-pointer"
+                        title="Fixar no papel"
                       >
                         OK
                       </button>
@@ -2195,45 +2329,40 @@ export function PageCanvas({
                     {/* Canto Superior Esquerdo */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, -1, -1)}
-                      className="absolute -top-3 -left-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
-                    />
-                    {/* Canto Superior Direito */}
-                    <div
-                      onPointerDown={(e) => startResizeImage(e, 1, -1)}
-                      className="absolute -top-3 -right-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nesw-resize shadow-md z-40"
+                      className="absolute -top-3 -left-3 w-7 h-7 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
                     />
                     {/* Canto Inferior Esquerdo */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, -1, 1)}
-                      className="absolute -bottom-3 -left-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nesw-resize shadow-md z-40"
+                      className="absolute -bottom-3 -left-3 w-7 h-7 rounded-full bg-white border-[3px] border-accent cursor-nesw-resize shadow-md z-40"
                     />
                     {/* Canto Inferior Direito */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, 1, 1)}
-                      className="absolute -bottom-3 -right-3 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
+                      className="absolute -bottom-3 -right-3 w-7 h-7 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
                     />
                     {/* Lateral Direita (Ajustar Largura) */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, 1, 0)}
-                      className="absolute top-1/2 -translate-y-1/2 -right-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
+                      className="absolute top-1/2 -translate-y-1/2 -right-3 w-4 h-9 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
                       title="Arraste para aumentar/diminuir a Largura"
                     />
                     {/* Lateral Esquerda (Ajustar Largura) */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, -1, 0)}
-                      className="absolute top-1/2 -translate-y-1/2 -left-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
+                      className="absolute top-1/2 -translate-y-1/2 -left-3 w-4 h-9 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
                       title="Arraste para aumentar/diminuir a Largura"
                     />
                     {/* Base Inferior (Ajustar Altura) */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, 0, 1)}
-                      className="absolute left-1/2 -translate-x-1/2 -bottom-2.5 w-8 h-3.5 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
+                      className="absolute left-1/2 -translate-x-1/2 -bottom-3 w-9 h-4 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
                       title="Arraste para aumentar/diminuir a Altura"
                     />
                     {/* Topo Superior (Ajustar Altura) */}
                     <div
                       onPointerDown={(e) => startResizeImage(e, 0, -1)}
-                      className="absolute left-1/2 -translate-x-1/2 -top-2.5 w-8 h-3.5 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
+                      className="absolute left-1/2 -translate-x-1/2 -top-3 w-9 h-4 rounded-full bg-accent border-2 border-white cursor-ns-resize shadow-md z-40"
                       title="Arraste para aumentar/diminuir a Altura"
                     />
                   </>
@@ -2243,32 +2372,29 @@ export function PageCanvas({
           })}
         </div>
 
-        {/* CAMADA 3: Traços Finalizados (Marca-Texto + Formas + Caneta) - Fica ACIMA dos Post-its/Stickers para a tinta aparecer sobre eles! */}
+        {/* CAMADA 3: Traços Finalizados (Marca-Texto + Formas + Caneta) - Fica ACIMA dos Post-its/Stickers (pointer-events-none para nunca travar cliques!) */}
         <canvas
           ref={staticCanvasRef}
           style={{ width: `${pageW}px`, height: `${pageH}px` }}
           className="absolute inset-0 z-20 pointer-events-none"
         />
 
-        {/* CAMADA 4: Wet Ink Canvas (Captura Pointer Events de Stylus/Toque) */}
+        {/* CAMADA 4: Wet Ink Canvas (Visualização em tempo real do traço ativo - pointer-events-none para nunca bloquear elementos!) */}
         <canvas
           ref={activeCanvasRef}
-          style={{ width: `${pageW}px`, height: `${pageH}px` }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={handlePointerUpOrCancel}
-          onPointerCancel={handlePointerUpOrCancel}
-          className={`absolute inset-0 z-[25] ${
-            activeTool === 'eraser'
-              ? 'cursor-none'
-              : activeTool === 'text'
-              ? 'cursor-text'
-              : 'cursor-crosshair'
-          }`}
+          style={{
+            width: `${pageW}px`,
+            height: `${pageH}px`,
+            mixBlendMode:
+              activeTool === 'highlighter' && page.paperColor !== 'dark'
+                ? 'multiply'
+                : 'normal',
+          }}
+          className="absolute inset-0 z-[25] pointer-events-none"
         />
 
         {/* CAMADA 5: Caixas de Texto, Laço, Cursor de Borracha e Janela de Zoom */}
-        <div className="absolute inset-0 z-30 pointer-events-none">
+        <div className="absolute inset-0 pointer-events-none">
           {/* 5.1. Caixas de Texto Ricas */}
           {page.textBoxes.map((tb) => {
             const isSelected =
@@ -2287,6 +2413,59 @@ export function PageCanvas({
                 : tb.fontFamily === 'mono'
                 ? 'font-mono'
                 : 'font-sans';
+            const toolbarScale = Math.min(1.4, Math.max(0.95, +(1 / zoom).toFixed(2)));
+
+            const startDragOrTapTextBox = (e: React.PointerEvent) => {
+              if (activeTool === 'eraser' || activeTool === 'lasso') {
+                return;
+              }
+              if ((e.target as HTMLElement)?.closest('button')) {
+                return;
+              }
+              e.stopPropagation();
+              setSelectedElement({ kind: 'textBox', id: tb.id });
+
+              const startX = e.clientX;
+              const startY = e.clientY;
+              const origX = tb.x;
+              const origY = tb.y;
+              let hasMoved = false;
+              let latestPos: { x: number; y: number } | null = null;
+
+              const onMove = (me: PointerEvent) => {
+                const rawDx = me.clientX - startX;
+                const rawDy = me.clientY - startY;
+                if (!hasMoved && Math.hypot(rawDx, rawDy) > 5) {
+                  hasMoved = true;
+                  if (document.activeElement instanceof HTMLElement) {
+                    document.activeElement.blur();
+                  }
+                }
+                if (hasMoved) {
+                  latestPos = {
+                    x: Math.round(origX + rawDx / zoom),
+                    y: Math.round(origY + rawDy / zoom),
+                  };
+                  updateTextBox(tb.id, latestPos, false);
+                }
+              };
+              const onUp = () => {
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                window.removeEventListener('pointercancel', onUp);
+                if (hasMoved && latestPos) {
+                  updateTextBox(tb.id, latestPos, true);
+                } else if (!hasMoved) {
+                  const el = document.querySelector<HTMLTextAreaElement>(
+                    `textarea[data-textbox-id="${tb.id}"]`
+                  );
+                  if (el) el.focus();
+                }
+              };
+              window.addEventListener('pointermove', onMove);
+              window.addEventListener('pointerup', onUp);
+              window.addEventListener('pointercancel', onUp);
+            };
 
             return (
               <div
@@ -2298,21 +2477,16 @@ export function PageCanvas({
                   minHeight: `${tb.height}px`,
                   backgroundColor: tb.backgroundColor || 'transparent',
                   transform: `rotate(${tb.rotation || 0}deg)`,
+                  zIndex: isSelected ? 45 : 30,
                 }}
-                onPointerDown={(e) => {
-                  if (activeTool === 'eraser' || activeTool === 'lasso') {
-                    return;
-                  }
-                  e.stopPropagation();
-                  setSelectedElement({ kind: 'textBox', id: tb.id });
-                }}
-                className={`absolute rounded-xl transition-shadow ${
+                onPointerDown={startDragOrTapTextBox}
+                className={`absolute rounded-xl transition-shadow cursor-move ${
                   activeTool === 'eraser' || activeTool === 'lasso'
                     ? 'pointer-events-none'
                     : 'pointer-events-auto'
                 } ${
                   isSelected
-                    ? 'ring-2 ring-accent bg-white/85 dark:bg-zinc-900/85 shadow-xl z-40'
+                    ? 'ring-2 ring-accent bg-white/90 dark:bg-zinc-900/90 shadow-2xl'
                     : matchesSearch
                     ? 'ring-2 ring-[#FF9500] bg-yellow-300/30'
                     : tb.text.trim().length === 0
@@ -2320,10 +2494,30 @@ export function PageCanvas({
                     : 'hover:ring-1 hover:ring-accent/40'
                 }`}
               >
+                {/* Botão Rápido de Excluir no Canto Superior Direito da Caixa de Texto */}
+                {isSelected && (
+                  <button
+                    type="button"
+                    onPointerDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      deleteTextBox(tb.id);
+                    }}
+                    className="absolute -top-3.5 -right-3.5 w-7 h-7 rounded-full bg-[#FF3B30] text-white flex items-center justify-center shadow-lg border-2 border-white z-50 hover:scale-110 transition-transform cursor-pointer"
+                    title="Excluir caixa de texto"
+                  >
+                    <X className="w-4 h-4 stroke-[2.5]" />
+                  </button>
+                )}
+
                 {/* Barra de Arraste + Formatação de Texto quando selecionado */}
                 {isSelected && (
                   <div
-                    style={{ backgroundColor: 'var(--bg-surface)' }}
+                    style={{
+                      backgroundColor: 'var(--bg-surface)',
+                      transform: `scale(${toolbarScale})`,
+                      transformOrigin: 'bottom left',
+                    }}
                     onPointerDown={(e) => {
                       e.stopPropagation();
                       if ((e.target as HTMLElement)?.closest('button')) {
@@ -2333,27 +2527,39 @@ export function PageCanvas({
                       const startY = e.clientY;
                       const origX = tb.x;
                       const origY = tb.y;
+                      let latestPos: { x: number; y: number } | null = null;
                       const onMove = (me: PointerEvent) => {
-                        updateTextBox(tb.id, {
+                        latestPos = {
                           x: Math.round(origX + (me.clientX - startX) / zoom),
                           y: Math.round(origY + (me.clientY - startY) / zoom),
-                        });
+                        };
+                        updateTextBox(tb.id, latestPos, false);
                       };
                       const onUp = () => {
                         window.removeEventListener('pointermove', onMove);
                         window.removeEventListener('pointerup', onUp);
+                        window.removeEventListener('pointercancel', onUp);
+                        if (latestPos) {
+                          updateTextBox(tb.id, latestPos, true);
+                        }
                       };
                       window.addEventListener('pointermove', onMove);
                       window.addEventListener('pointerup', onUp);
+                      window.addEventListener('pointercancel', onUp);
                     }}
-                    className="-top-11 left-0 absolute flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-xl px-2.5 py-1 text-xs cursor-move whitespace-nowrap z-50"
+                    className="-top-12 left-0 absolute flex items-center gap-1 bg-surface border border-[var(--border-subtle)] shadow-2xl rounded-xl px-2.5 py-1.5 text-xs cursor-move whitespace-nowrap z-50"
                   >
+                    <span className="px-1.5 py-0.5 text-[10px] font-bold text-secondary select-none cursor-move">
+                      ⋮⋮ Mover
+                    </span>
                     <button
                       type="button"
-                      onClick={() =>
-                        updateTextBox(tb.id, { bold: !tb.bold }, true)
-                      }
-                      className={`p-1 rounded ${
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        updateTextBox(tb.id, { bold: !tb.bold }, true);
+                      }}
+                      className={`p-1 rounded cursor-pointer ${
                         tb.bold ? 'bg-accent text-white' : 'text-primary'
                       }`}
                     >
@@ -2361,10 +2567,12 @@ export function PageCanvas({
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        updateTextBox(tb.id, { italic: !tb.italic }, true)
-                      }
-                      className={`p-1 rounded ${
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        updateTextBox(tb.id, { italic: !tb.italic }, true);
+                      }}
+                      className={`p-1 rounded cursor-pointer ${
                         tb.italic ? 'bg-accent text-white' : 'text-primary'
                       }`}
                     >
@@ -2372,16 +2580,18 @@ export function PageCanvas({
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         updateTextBox(
                           tb.id,
                           {
                             fontSize: Math.max(11, tb.fontSize - 2),
                           },
                           true
-                        )
-                      }
-                      className="px-1.5 py-0.5 rounded hover:bg-dock text-primary font-bold"
+                        );
+                      }}
+                      className="px-1.5 py-0.5 rounded hover:bg-dock text-primary font-bold cursor-pointer"
                     >
                       A-
                     </button>
@@ -2390,22 +2600,26 @@ export function PageCanvas({
                     </span>
                     <button
                       type="button"
-                      onClick={() =>
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         updateTextBox(
                           tb.id,
                           {
                             fontSize: Math.min(54, tb.fontSize + 2),
                           },
                           true
-                        )
-                      }
-                      className="px-1.5 py-0.5 rounded hover:bg-dock text-primary font-bold"
+                        );
+                      }}
+                      className="px-1.5 py-0.5 rounded hover:bg-dock text-primary font-bold cursor-pointer"
                     >
                       A+
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
+                      onPointerDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         updateTextBox(
                           tb.id,
                           {
@@ -2417,9 +2631,9 @@ export function PageCanvas({
                                 : 'left',
                           },
                           true
-                        )
-                      }
-                      className="p-1 rounded hover:bg-dock text-primary"
+                        );
+                      }}
+                      className="p-1 rounded hover:bg-dock text-primary cursor-pointer"
                     >
                       {tb.textAlign === 'left' ? (
                         <AlignLeft className="w-3.5 h-3.5" />
@@ -2431,24 +2645,25 @@ export function PageCanvas({
                     </button>
                     <button
                       type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
+                      onPointerDown={(e) => {
+                        e.preventDefault();
                         e.stopPropagation();
                         deleteTextBox(tb.id);
                       }}
-                      className="p-1 rounded hover:bg-red-500/10 text-[#FF3B30]"
+                      className="px-2 py-0.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-[#FF3B30] font-bold flex items-center gap-1 cursor-pointer"
                       title="Excluir caixa de texto"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
+                      <span>Excluir</span>
                     </button>
                     <button
                       type="button"
-                      onPointerDown={(e) => e.stopPropagation()}
-                      onClick={(e) => {
+                      onPointerDown={(e) => {
+                        e.preventDefault();
                         e.stopPropagation();
                         setSelectedElement(null);
                       }}
-                      className="px-2 py-0.5 rounded-lg bg-accent text-white font-semibold ml-1"
+                      className="px-2.5 py-0.5 rounded-lg bg-accent text-white font-semibold ml-1 cursor-pointer"
                     >
                       OK
                     </button>
@@ -2458,7 +2673,7 @@ export function PageCanvas({
                 <textarea
                   data-textbox-id={tb.id}
                   value={tb.text}
-                  placeholder="Digite sua nota aqui..."
+                  placeholder="Toque para digitar ou arraste para mover..."
                   onChange={(e) => updateTextBox(tb.id, { text: e.target.value })}
                   style={{
                     fontSize: `${tb.fontSize}px`,
@@ -2469,7 +2684,7 @@ export function PageCanvas({
                     userSelect: 'text',
                     WebkitUserSelect: 'text',
                   }}
-                  className={`w-full h-full min-h-[72px] bg-transparent resize-none p-2.5 focus:outline-none leading-snug ${fontClass}`}
+                  className={`w-full h-full min-h-[72px] bg-transparent resize-none p-2.5 focus:outline-none leading-snug cursor-move focus:cursor-text ${fontClass}`}
                 />
 
                 {isSelected && (
@@ -2477,6 +2692,7 @@ export function PageCanvas({
                     {/* Alça lateral direita (Largura) */}
                     <div
                       onPointerDown={(e) => {
+                        e.preventDefault();
                         e.stopPropagation();
                         const startX = e.clientX;
                         const origW = tb.width;
@@ -2491,15 +2707,18 @@ export function PageCanvas({
                         const onUp = () => {
                           window.removeEventListener('pointermove', onMove);
                           window.removeEventListener('pointerup', onUp);
+                          window.removeEventListener('pointercancel', onUp);
                         };
                         window.addEventListener('pointermove', onMove);
                         window.addEventListener('pointerup', onUp);
+                        window.addEventListener('pointercancel', onUp);
                       }}
-                      className="absolute top-1/2 -translate-y-1/2 -right-2.5 w-3.5 h-8 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md"
+                      className="absolute top-1/2 -translate-y-1/2 -right-3 w-4 h-9 rounded-full bg-accent border-2 border-white cursor-ew-resize shadow-md z-40"
                     />
                     {/* Alça canto inferior direito (Largura + Altura) */}
                     <div
                       onPointerDown={(e) => {
+                        e.preventDefault();
                         e.stopPropagation();
                         const startX = e.clientX;
                         const startY = e.clientY;
@@ -2520,11 +2739,13 @@ export function PageCanvas({
                         const onUp = () => {
                           window.removeEventListener('pointermove', onMove);
                           window.removeEventListener('pointerup', onUp);
+                          window.removeEventListener('pointercancel', onUp);
                         };
                         window.addEventListener('pointermove', onMove);
                         window.addEventListener('pointerup', onUp);
+                        window.addEventListener('pointercancel', onUp);
                       }}
-                      className="absolute -bottom-2.5 -right-2.5 w-6 h-6 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md"
+                      className="absolute -bottom-3 -right-3 w-7 h-7 rounded-full bg-white border-[3px] border-accent cursor-nwse-resize shadow-md z-40"
                     />
                   </>
                 )}

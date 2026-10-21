@@ -62,10 +62,10 @@ export function getSvgPathFromStroke(stroke: number[][]): string {
  * para que a escrita saia fluida e encorpada mesmo sem fazer força na tela.
  */
 export function boostStylusPressure(rawPressure: number): number {
-  if (!rawPressure || rawPressure <= 0) return 0.58;
-  // Curva gamma < 1 (0.62) deixa o início do toque muito mais sensível e responsivo
-  const boosted = Math.pow(Math.min(1, Math.max(0.05, rawPressure)), 0.62);
-  return Math.min(1, Math.max(0.36, boosted));
+  if (!rawPressure || rawPressure <= 0) return 0.65;
+  // Curva gamma < 1 (0.45) deixa até o toque mais leve da caneta super sensível e responsivo
+  const boosted = Math.pow(Math.min(1, Math.max(0.02, rawPressure)), 0.45);
+  return Math.min(1, Math.max(0.46, boosted));
 }
 
 /**
@@ -82,7 +82,7 @@ export function drawStrokeOnCanvas(
 
   if (stroke.tool === 'highlighter') {
     // Marca-texto estilo GoodNotes: ponta arredondada/chanfrada suave com curvas quadráticas
-    ctx.globalAlpha = stroke.opacity ?? 0.35;
+    ctx.globalAlpha = stroke.opacity ?? 0.42;
     ctx.strokeStyle = stroke.color;
     ctx.lineWidth = stroke.size;
     ctx.lineCap = 'round';
@@ -92,7 +92,7 @@ export function drawStrokeOnCanvas(
     const pts = stroke.points;
     ctx.moveTo(pts[0].x, pts[0].y);
     if (pts.length === 1) {
-      ctx.lineTo(pts[0].x + 0.1, pts[0].y + 0.1);
+      ctx.lineTo(pts[0].x + 0.5, pts[0].y);
     } else if (pts.length === 2) {
       ctx.lineTo(pts[1].x, pts[1].y);
     } else {
@@ -112,7 +112,7 @@ export function drawStrokeOnCanvas(
   // Ponto único ou pingo de letra ("i", "j", "."): desenha círculo imediato e nítido
   if (stroke.points.length === 1) {
     const p = stroke.points[0];
-    const radius = Math.max(1.2, stroke.size * 0.55);
+    const radius = Math.max(1.4, stroke.size * 0.58);
     ctx.fillStyle = stroke.color;
     ctx.globalAlpha = stroke.opacity ?? 1;
     ctx.beginPath();
@@ -135,25 +135,25 @@ export function drawStrokeOnCanvas(
     }
   > = {
     fountain: {
-      thinning: 0.44,
-      smoothing: 0.38,
-      streamline: 0.22,
+      thinning: 0.4,
+      smoothing: 0.32,
+      streamline: 0.14,
       simulatePressure: false,
       startTaper: 0,
       endTaper: 0,
     },
     ball: {
-      thinning: 0.04,
-      smoothing: 0.32,
-      streamline: 0.18,
+      thinning: 0.02,
+      smoothing: 0.26,
+      streamline: 0.1,
       simulatePressure: false,
       startTaper: 0,
       endTaper: 0,
     },
     brush: {
-      thinning: 0.72,
-      smoothing: 0.45,
-      streamline: 0.26,
+      thinning: 0.68,
+      smoothing: 0.38,
+      streamline: 0.18,
       simulatePressure: false,
       startTaper: 10,
       endTaper: 14,
@@ -169,10 +169,10 @@ export function drawStrokeOnCanvas(
     stroke.points.map((p) => [
       p.x,
       p.y,
-      hasRealPressure ? boostStylusPressure(p.pressure) : 0.58,
+      hasRealPressure ? boostStylusPressure(p.pressure) : 0.65,
     ]),
     {
-      size: stroke.size * 1.08,
+      size: stroke.size * 1.12,
       thinning: cfg.thinning,
       smoothing: cfg.smoothing,
       streamline: cfg.streamline,

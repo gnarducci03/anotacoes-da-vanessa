@@ -72,8 +72,25 @@ export function DocumentWorkspace({
   const [optimisticPagesMap, setOptimisticPagesMap] = useState<
     Record<string, PageRecord>
   >({});
+  const [fallbackPages, setFallbackPages] = useState<PageRecord[]>([]);
 
-  const sortedPages = [...pages]
+  useEffect(() => {
+    if (pages.length === 0) {
+      db.pages
+        .where('notebookId')
+        .equals(activeNotebook.id)
+        .toArray()
+        .then((res) => {
+          if (res.length > 0) setFallbackPages(res);
+        });
+    } else if (fallbackPages.length > 0) {
+      setFallbackPages([]);
+    }
+  }, [pages.length, activeNotebook.id, fallbackPages.length]);
+
+  const effectivePages = pages.length > 0 ? pages : fallbackPages;
+
+  const sortedPages = [...effectivePages]
     .map((p) => {
       const opt = optimisticPagesMap[p.id];
       return opt && opt.updatedAt >= p.updatedAt ? opt : p;
@@ -246,6 +263,23 @@ export function DocumentWorkspace({
     };
   }, [activeNotebook.pdfAssetId, currentPage?.id, currentPage?.pdfPageIndex]);
 
+  const saveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+  const pendingPageToSaveRef = useRef<PageRecord | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (saveDebounceTimerRef.current) {
+        clearTimeout(saveDebounceTimerRef.current);
+      }
+      if (pendingPageToSaveRef.current) {
+        db.pages.put(pendingPageToSaveRef.current);
+        pendingPageToSaveRef.current = null;
+      }
+    };
+  }, []);
+
   // Função central para atualizar a página atual instantaneamente em memória e persistir em segundo plano no Dexie
   const handleCommitPageUpdate = useCallback(
     (updater: (prev: PageRecord) => PageRecord, recordHistory = true) => {
@@ -269,8 +303,27 @@ export function DocumentWorkspace({
         [updated.id]: updated,
       }));
 
-      // Persiste em segundo plano no IndexedDB
-      db.pages.put(updated);
+      // Persiste em segundo plano no IndexedDB (imediato em commits finais; debounced em arrastes de 120Hz)
+      if (recordHistory) {
+        if (saveDebounceTimerRef.current) {
+          clearTimeout(saveDebounceTimerRef.current);
+          saveDebounceTimerRef.current = null;
+        }
+        pendingPageToSaveRef.current = null;
+        db.pages.put(updated);
+      } else {
+        pendingPageToSaveRef.current = updated;
+        if (saveDebounceTimerRef.current) {
+          clearTimeout(saveDebounceTimerRef.current);
+        }
+        saveDebounceTimerRef.current = setTimeout(() => {
+          saveDebounceTimerRef.current = null;
+          if (pendingPageToSaveRef.current) {
+            db.pages.put(pendingPageToSaveRef.current);
+            pendingPageToSaveRef.current = null;
+          }
+        }, 160);
+      }
     },
     []
   );
@@ -556,6 +609,9 @@ export function DocumentWorkspace({
     defaultHeight = 190
   ) => {
     const newId = createId('img');
+    if (activeTool === 'eraser' || activeTool === 'lasso') {
+      setActiveTool('pen');
+    }
     handleCommitPageUpdate(
       (prev) => {
         const offset = (prev.images.length % 6) * 32;

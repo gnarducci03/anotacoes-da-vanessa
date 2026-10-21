@@ -13,7 +13,7 @@ import { drawShapeOnCanvas, drawStrokeOnCanvas } from './ink-engine';
 async function getPdfJs() {
   const pdfjsLib = await import('pdfjs-dist');
   if (typeof window !== 'undefined' && !pdfjsLib.GlobalWorkerOptions.workerSrc) {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   }
   return pdfjsLib;
 }
@@ -84,6 +84,27 @@ export async function importPdfAsNotebook(
   const notebookId = createId('nb');
   const cleanTitle = file.name.replace(/\.pdf$/i, '') || 'Documento PDF';
 
+  let defaultWidth = 768;
+  let defaultHeight = 994;
+  let defaultOrientation: 'portrait' | 'landscape' = 'portrait';
+
+  try {
+    const firstPg = await pdfDoc.getPage(1);
+    const vp = firstPg.getViewport({ scale: 1 });
+    if (vp.width > 0 && vp.height > 0) {
+      defaultOrientation = vp.width > vp.height ? 'landscape' : 'portrait';
+      if (defaultOrientation === 'portrait') {
+        defaultWidth = 768;
+        defaultHeight = Math.round((768 * vp.height) / vp.width);
+      } else {
+        defaultHeight = 768;
+        defaultWidth = Math.round((768 * vp.width) / vp.height);
+      }
+    }
+  } catch {
+    // Usa dimensões padrão
+  }
+
   const newNotebook: NotebookRecord = {
     id: notebookId,
     title: cleanTitle,
@@ -93,7 +114,7 @@ export async function importPdfAsNotebook(
     defaultTemplate: 'blank',
     defaultPaperColor: 'white',
     pageSize: 'goodnotes',
-    orientation: 'portrait',
+    orientation: defaultOrientation,
     isFavorite: false,
     isTrashed: false,
     pdfAssetId: assetId,
@@ -105,30 +126,32 @@ export async function importPdfAsNotebook(
   const pagesToCreate: PageRecord[] = [];
   for (let i = 1; i <= numPages; i++) {
     let extractedText = '';
-    let customWidth = 768;
-    let customHeight = 994;
-    let orientation: 'portrait' | 'landscape' = 'portrait';
+    let customWidth = defaultWidth;
+    let customHeight = defaultHeight;
+    let orientation: 'portrait' | 'landscape' = defaultOrientation;
 
-    try {
-      const pg = await pdfDoc.getPage(i);
-      const vp = pg.getViewport({ scale: 1 });
-      if (vp.width > 0 && vp.height > 0) {
-        orientation = vp.width > vp.height ? 'landscape' : 'portrait';
-        // Normaliza a base da página para 768px no menor eixo para manter nitidez e espessura de caneta consistentes
-        if (orientation === 'portrait') {
-          customWidth = 768;
-          customHeight = Math.round((768 * vp.height) / vp.width);
-        } else {
-          customHeight = 768;
-          customWidth = Math.round((768 * vp.width) / vp.height);
+    // Para PDFs grandes, indexa dimensões/texto das primeiras 10 páginas imediatamente e cria o restante sem travar
+    if (i <= 10) {
+      try {
+        const pg = await pdfDoc.getPage(i);
+        const vp = pg.getViewport({ scale: 1 });
+        if (vp.width > 0 && vp.height > 0) {
+          orientation = vp.width > vp.height ? 'landscape' : 'portrait';
+          if (orientation === 'portrait') {
+            customWidth = 768;
+            customHeight = Math.round((768 * vp.height) / vp.width);
+          } else {
+            customHeight = 768;
+            customWidth = Math.round((768 * vp.width) / vp.height);
+          }
         }
+        const tc = await pg.getTextContent();
+        extractedText = tc.items
+          .map((item) => ('str' in item ? item.str : ''))
+          .join(' ');
+      } catch {
+        extractedText = '';
       }
-      const tc = await pg.getTextContent();
-      extractedText = tc.items
-        .map((item) => ('str' in item ? item.str : ''))
-        .join(' ');
-    } catch {
-      extractedText = '';
     }
 
     pagesToCreate.push({

@@ -105,8 +105,7 @@ export function NewNotebookModal({
   const selectedCover =
     COVER_PRESETS.find((c) => c.id === coverStyle) || COVER_PRESETS[0];
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const triggerCreate = () => {
     onCreate({
       title: title.trim() || 'Caderno Sem Título',
       coverStyle,
@@ -119,10 +118,16 @@ export function NewNotebookModal({
     onClose();
   };
 
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    triggerCreate();
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-150">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-150">
       <form
         onSubmit={handleSubmit}
+        style={{ backgroundColor: 'var(--bg-surface)' }}
         className="w-full max-w-3xl max-h-[90vh] flex flex-col rounded-3xl bg-surface border border-[var(--border-subtle)] shadow-2xl overflow-hidden"
       >
         {/* Top Header estilo iPadOS Sheet */}
@@ -136,10 +141,11 @@ export function NewNotebookModal({
           </button>
           <h2 className="text-base font-semibold text-primary">Novo Caderno</h2>
           <button
-            type="submit"
-            className="px-4 py-1.5 rounded-full bg-accent text-white text-sm font-semibold shadow-sm hover:opacity-95 transition-opacity"
+            type="button"
+            onClick={triggerCreate}
+            className="px-5 py-1.5 rounded-full bg-accent text-white text-sm font-semibold shadow-sm hover:opacity-95 transition-opacity cursor-pointer"
           >
-            Criar
+            Criar Caderno
           </button>
         </div>
 
@@ -155,7 +161,6 @@ export function NewNotebookModal({
               onChange={(e) => setTitle(e.target.value)}
               placeholder="Ex: Cálculo I, Reunião de Produto..."
               className="w-full px-3.5 py-2 rounded-xl bg-surface border border-[var(--border-subtle)] text-sm text-primary focus:outline-none focus:ring-2 focus:ring-accent"
-              autoFocus
             />
           </div>
 
@@ -318,6 +323,23 @@ export function NewNotebookModal({
               })}
             </div>
           )}
+        </div>
+        {/* Rodapé com botão de confirmação amplo para Tablet */}
+        <div className="px-6 py-3.5 border-t border-[var(--border-subtle)] bg-elevated flex items-center justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-2 rounded-full text-xs font-semibold text-secondary hover:bg-dock"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={triggerCreate}
+            className="px-6 py-2 rounded-full bg-accent text-white text-xs font-bold shadow-md hover:opacity-95 transition-opacity cursor-pointer"
+          >
+            Criar e Abrir Caderno
+          </button>
         </div>
       </form>
     </div>

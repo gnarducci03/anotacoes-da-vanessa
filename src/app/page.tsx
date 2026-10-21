@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
 import { db, ensureSeedData } from '@/lib/db';
 import { FolderRecord, NotebookRecord, PageRecord } from '@/types/note';
 import { LibraryView } from '@/components/library/LibraryView';
@@ -44,13 +43,9 @@ export default function HomePage() {
     setTimeout(() => setToastMessage(null), 3400);
   }, []);
 
-  const [manualFolders, setManualFolders] = useState<FolderRecord[] | null>(
-    null
-  );
-  const [manualNotebooks, setManualNotebooks] = useState<
-    NotebookRecord[] | null
-  >(null);
-  const [manualPages, setManualPages] = useState<PageRecord[] | null>(null);
+  const [folders, setFolders] = useState<FolderRecord[]>([]);
+  const [notebooks, setNotebooks] = useState<NotebookRecord[]>([]);
+  const [pages, setPages] = useState<PageRecord[]>([]);
 
   const refreshData = useCallback(async () => {
     const [f, n, p] = await Promise.all([
@@ -58,9 +53,9 @@ export default function HomePage() {
       db.notebooks.toArray(),
       db.pages.toArray(),
     ]);
-    setManualFolders(f);
-    setManualNotebooks(n);
-    setManualPages(p);
+    setFolders(f);
+    setNotebooks(n);
+    setPages(p);
   }, []);
 
   useEffect(() => {
@@ -71,12 +66,13 @@ export default function HomePage() {
     if (savedUser?.email) {
       setDriveUserEmail(savedUser.email);
     }
-    if (
-      typeof window !== 'undefined' &&
-      'serviceWorker' in navigator &&
-      process.env.NODE_ENV === 'production'
-    ) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker
+        .register('/sw.js')
+        .then((reg) => {
+          reg.update().catch(() => {});
+        })
+        .catch(() => {});
     }
   }, [refreshData]);
 
@@ -100,27 +96,7 @@ export default function HomePage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const liveFolders = useLiveQuery(() => db.folders.toArray(), [], []);
-  const liveNotebooks = useLiveQuery(() => db.notebooks.toArray(), [], []);
-  const livePages = useLiveQuery(() => db.pages.toArray(), [], []);
-
-  useEffect(() => {
-    setManualFolders(null);
-  }, [liveFolders]);
-
-  useEffect(() => {
-    setManualNotebooks(null);
-  }, [liveNotebooks]);
-
-  useEffect(() => {
-    setManualPages(null);
-  }, [livePages]);
-
-  const folders = manualFolders ?? liveFolders;
-  const notebooks = manualNotebooks ?? liveNotebooks;
-  const pages = manualPages ?? livePages;
-
-  // Auto-Sync com debounce de 15 segundos sempre que cadernos/páginas mudam e a sessão do Google Drive está ativa
+  // Auto-Sync com debounce de 15 segundos sempre que cadernos/pastas mudam e a sessão do Google Drive está ativa
   useEffect(() => {
     if (!autoSyncEnabled || !hasValidAccessToken()) {
       return;
@@ -145,16 +121,19 @@ export default function HomePage() {
     };
   }, [folders, notebooks, pages, autoSyncEnabled]);
 
-  const handleOpenNotebook = (
-    notebook: NotebookRecord,
-    initialPageIndex = 0
-  ) => {
-    setOpenTabIds((prev) =>
-      prev.includes(notebook.id) ? prev : [...prev, notebook.id]
-    );
-    setActiveNotebookId(notebook.id);
-    setRequestedPageIndex(initialPageIndex);
-  };
+  const handleOpenNotebook = useCallback(
+    (notebook: NotebookRecord, initialPageIndex = 0) => {
+      setNotebooks((prev) =>
+        prev.some((n) => n.id === notebook.id) ? prev : [...prev, notebook]
+      );
+      setOpenTabIds((prev) =>
+        prev.includes(notebook.id) ? prev : [...prev, notebook.id]
+      );
+      setActiveNotebookId(notebook.id);
+      setRequestedPageIndex(initialPageIndex);
+    },
+    []
+  );
 
   const handleCloseTab = (notebookId: string) => {
     setOpenTabIds((prev) => {
@@ -184,7 +163,8 @@ export default function HomePage() {
       await refreshData();
       showToast(`PDF "${createdNb.title}" importado com sucesso!`);
       handleOpenNotebook(createdNb, 0);
-    } catch {
+    } catch (err) {
+      console.error('Erro ao importar PDF:', err);
       showToast('Não foi possível importar o arquivo PDF.');
     }
   };

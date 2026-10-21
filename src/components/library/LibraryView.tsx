@@ -278,7 +278,7 @@ export function LibraryView({
       await db.pages.add(firstPage);
     });
     await onRefreshData?.();
-
+    onShowToast?.(`Caderno "${newNotebook.title}" criado!`);
     onOpenNotebook(newNotebook, 0);
   };
 
@@ -969,9 +969,10 @@ export function LibraryView({
                         </button>
                         <div className="my-1 border-t border-[var(--border-subtle)]" />
                         <button
+                          type="button"
                           onClick={() => {
-                            setPlusMenuOpen(false);
                             pdfInputRef.current?.click();
+                            setPlusMenuOpen(false);
                           }}
                           className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-dock text-primary font-medium"
                         >
@@ -1184,30 +1185,30 @@ export function LibraryView({
       <input
         ref={pdfInputRef}
         type="file"
-        accept="application/pdf"
-        className="hidden"
+        accept=".pdf,application/pdf"
+        className="sr-only"
         onChange={async (e) => {
           const file = e.target.files?.[0];
+          e.target.value = '';
           if (file && onImportPdfFile) {
             await onImportPdfFile(
               file,
               navSection === 'documents' ? currentFolderId : null
             );
           }
-          e.target.value = '';
         }}
       />
       <input
         ref={backupInputRef}
         type="file"
         accept=".json,.inknote"
-        className="hidden"
+        className="sr-only"
         onChange={async (e) => {
           const file = e.target.files?.[0];
+          e.target.value = '';
           if (file && onImportBackupFile) {
             await onImportBackupFile(file);
           }
-          e.target.value = '';
         }}
       />
 
