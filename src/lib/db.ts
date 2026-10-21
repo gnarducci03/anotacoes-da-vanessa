@@ -30,12 +30,59 @@ export function createId(prefix = 'id'): string {
 }
 
 /**
- * Inicializa dados de exemplo no primeiro acesso para demonstrar pastas, capas e templates estilo GoodNotes
+ * Solicita ao navegador armazenamento persistente (evita que iPadOS/Android apaguem o IndexedDB)
+ * e retorna informações de uso e status de proteção.
+ */
+export async function ensurePersistentStorage(): Promise<{
+  persisted: boolean;
+  usageBytes: number;
+  quotaBytes: number;
+}> {
+  if (typeof window === 'undefined' || !navigator.storage) {
+    return { persisted: false, usageBytes: 0, quotaBytes: 0 };
+  }
+
+  let persisted = false;
+  try {
+    if (navigator.storage.persisted) {
+      persisted = await navigator.storage.persisted();
+    }
+    if (!persisted && navigator.storage.persist) {
+      persisted = await navigator.storage.persist();
+    }
+  } catch {
+    persisted = false;
+  }
+
+  let usageBytes = 0;
+  let quotaBytes = 0;
+  try {
+    if (navigator.storage.estimate) {
+      const est = await navigator.storage.estimate();
+      usageBytes = est.usage || 0;
+      quotaBytes = est.quota || 0;
+    }
+  } catch {
+    // ignore
+  }
+
+  return { persisted, usageBytes, quotaBytes };
+}
+
+/**
+ * Inicializa dados de exemplo APENAS no primeiro uso da vida do dispositivo
  */
 export async function ensureSeedData(): Promise<void> {
   if (typeof window === 'undefined') return;
+  await ensurePersistentStorage();
+
+  const alreadySeeded = window.localStorage.getItem('inkpad_seeded_v1');
   const count = await db.notebooks.count();
-  if (count > 0) return;
+  if (count > 0 || alreadySeeded === 'true') {
+    window.localStorage.setItem('inkpad_seeded_v1', 'true');
+    return;
+  }
+  window.localStorage.setItem('inkpad_seeded_v1', 'true');
 
   const now = Date.now();
   const folderEstudosId = createId('fld');

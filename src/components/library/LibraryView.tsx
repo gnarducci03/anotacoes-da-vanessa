@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CoverStyleId,
   FolderRecord,
@@ -11,7 +11,7 @@ import {
   PaperColor,
   PaperTemplateId,
 } from '@/types/note';
-import { createId, db } from '@/lib/db';
+import { createId, db, ensurePersistentStorage } from '@/lib/db';
 import { NotebookCard } from './NotebookCard';
 import { FolderCard } from './FolderCard';
 import { NewNotebookModal } from './NewNotebookModal';
@@ -35,6 +35,7 @@ import {
   Download,
   Upload,
   Keyboard,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface LibraryViewProps {
@@ -99,6 +100,20 @@ export function LibraryView({
 
   const pdfInputRef = useRef<HTMLInputElement | null>(null);
   const backupInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [storageInfo, setStorageInfo] = useState<{
+    persisted: boolean;
+    usageMB: string;
+  }>({ persisted: false, usageMB: '0.0' });
+
+  useEffect(() => {
+    ensurePersistentStorage().then(({ persisted, usageBytes }) => {
+      setStorageInfo({
+        persisted,
+        usageMB: (usageBytes / (1024 * 1024)).toFixed(1),
+      });
+    });
+  }, [notebooks.length, pages.length]);
 
   // Mapa de contagem de páginas por caderno
   const pageCountByNotebook = useMemo(() => {
@@ -375,7 +390,7 @@ export function LibraryView({
     });
   };
 
-  // Lixeira / Exclusão Definitiva
+  // Lixeira / Exclusão Definitiva (com limpeza de PDF órfão caso nenhum outro caderno o utilize)
   const handleTrashOrDeleteNotebook = async (nb: NotebookRecord) => {
     if (!nb.isTrashed) {
       await db.notebooks.update(nb.id, {
@@ -383,10 +398,24 @@ export function LibraryView({
         updatedAt: Date.now(),
       });
     } else {
-      await db.transaction('rw', db.notebooks, db.pages, async () => {
-        await db.pages.where('notebookId').equals(nb.id).delete();
-        await db.notebooks.delete(nb.id);
-      });
+      await db.transaction(
+        'rw',
+        db.notebooks,
+        db.pages,
+        db.assets,
+        async () => {
+          await db.pages.where('notebookId').equals(nb.id).delete();
+          await db.notebooks.delete(nb.id);
+          if (nb.pdfAssetId) {
+            const othersUsingSamePdf = await db.notebooks
+              .filter((other) => other.id !== nb.id && other.pdfAssetId === nb.pdfAssetId)
+              .count();
+            if (othersUsingSamePdf === 0) {
+              await db.assets.delete(nb.pdfAssetId);
+            }
+          }
+        }
+      );
     }
   };
 
@@ -576,6 +605,15 @@ export function LibraryView({
 
         {/* Rodapé da Sidebar: Backup & Atalhos */}
         <div className="pt-4 border-t border-[var(--border-subtle)] space-y-1">
+          <div className="px-3 py-2 mb-1 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between text-[11px]">
+            <span className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
+              <ShieldCheck className="w-3.5 h-3.5" />
+              Salvo no Tablet
+            </span>
+            <span className="text-secondary font-medium">
+              {storageInfo.usageMB} MB
+            </span>
+          </div>
           <button
             onClick={() => onExportBackup?.()}
             className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-medium text-secondary hover:text-primary hover:bg-dock"
