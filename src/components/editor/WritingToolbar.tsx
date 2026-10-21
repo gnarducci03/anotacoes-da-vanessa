@@ -14,7 +14,8 @@ import {
   Lasso,
   Type,
   Image as ImageIcon,
-  Sparkles,
+  Hand,
+  PenTool,
   Radio,
   Trash2,
   Check,
@@ -237,18 +238,27 @@ export function WritingToolbar({
           <span className="hidden lg:inline">Zoom</span>
         </button>
 
-        {/* Toggle Stylus-Only / Palm Rejection */}
+        {/* Toggle Stylus-Only / Palm Rejection (Bloqueio Total da Mão) */}
         <button
           onClick={onToggleStylusOnlyMode}
-          className={`px-2.5 py-1.5 rounded-xl text-[11px] font-semibold transition-all hidden sm:flex items-center gap-1 ${
+          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
             stylusOnlyMode
-              ? 'bg-accent/15 text-accent border border-accent/30'
-              : 'hover:bg-surface text-secondary'
+              ? 'bg-emerald-600 text-white ring-2 ring-emerald-500/40'
+              : 'bg-surface hover:bg-dock text-primary border border-[var(--border-subtle)]'
           }`}
-          title="Quando ativo, 1 dedo move a página (Pan) e apenas a Caneta Stylus risca"
+          title="Quando ativo (Verde), a palma da mão é 100% ignorada ao escrever e 2 dedos movem/dão zoom na folha"
         >
-          <Sparkles className="w-3.5 h-3.5" />
-          {stylusOnlyMode ? 'Só Caneta (Palm Reject)' : 'Caneta + Toque'}
+          {stylusOnlyMode ? (
+            <>
+              <PenTool className="w-3.5 h-3.5" />
+              <span>Só Caneta (Mão Bloqueada)</span>
+            </>
+          ) : (
+            <>
+              <Hand className="w-3.5 h-3.5 text-amber-500" />
+              <span>Dedo + Caneta</span>
+            </>
+          )}
         </button>
       </div>
 

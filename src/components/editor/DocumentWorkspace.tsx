@@ -129,9 +129,39 @@ export function DocumentWorkspace({
     images: true,
   });
 
-  // Modos e Painéis
-  const [stylusOnlyMode, setStylusOnlyMode] = useState(false);
+  // Modos e Painéis (Modo Só Caneta ativo por padrão para não atrapalhar com a mão no tablet)
+  const [stylusOnlyMode, setStylusOnlyMode] = useState(true);
+  const [modeToast, setModeToast] = useState<string | null>(null);
   const [zoomWindowOpen, setZoomWindowOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('vanessa_notes_stylus_only');
+      if (saved !== null) {
+        setStylusOnlyMode(saved === 'true');
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const handleToggleStylusOnlyMode = useCallback(() => {
+    setStylusOnlyMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('vanessa_notes_stylus_only', String(next));
+      } catch {
+        // ignore
+      }
+      setModeToast(
+        next
+          ? '✋ Só Caneta ativado: a mão apoiada na tela é bloqueada! Use 2 dedos para mover ou dar zoom.'
+          : '👆 Dedo + Caneta ativado: você pode riscar tanto com o dedo quanto com a caneta.'
+      );
+      setTimeout(() => setModeToast(null), 3500);
+      return next;
+    });
+  }, []);
   const [thumbnailsModalOpen, setThumbnailsModalOpen] = useState(false);
   const [stickersModalOpen, setStickersModalOpen] = useState(false);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
@@ -776,8 +806,15 @@ export function DocumentWorkspace({
         zoomWindowOpen={zoomWindowOpen}
         onToggleZoomWindow={() => setZoomWindowOpen((v) => !v)}
         stylusOnlyMode={stylusOnlyMode}
-        onToggleStylusOnlyMode={() => setStylusOnlyMode((v) => !v)}
+        onToggleStylusOnlyMode={handleToggleStylusOnlyMode}
       />
+
+      {/* Toast de feedback do Modo Só Caneta */}
+      {modeToast && (
+        <div className="fixed top-28 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl bg-slate-900/95 text-white text-xs font-semibold shadow-2xl border border-white/15 pointer-events-none animate-fade-in">
+          {modeToast}
+        </div>
+      )}
 
       {/* 3. WORKSPACE CANVAS DE 4 CAMADAS */}
       <PageCanvas

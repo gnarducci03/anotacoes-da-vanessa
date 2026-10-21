@@ -262,12 +262,37 @@ export function PageCanvas({
   const zoomBoxW = 240;
   const zoomBoxH = 85;
 
+  // Cache de retângulo de tela e rAF para escrita de latência zero (120Hz sem layout thrashing)
+  const cachedCanvasRectRef = useRef<DOMRect | null>(null);
+  const wetRenderRafRef = useRef<number | null>(null);
+  const drawingPointerIdRef = useRef<number | null>(null);
+  const drawingPointerTypeRef = useRef<string | null>(null);
+
+  // Invalida o cache do retângulo sempre que o zoom, pan ou tamanho da página mudar
+  useEffect(() => {
+    cachedCanvasRectRef.current = null;
+  }, [zoom, pan.x, pan.y, pageW, pageH]);
+
+  // Pré-configura a resolução da camada de tinta ativa apenas quando pageW/pageH mudarem
+  useEffect(() => {
+    const canvas = activeCanvasRef.current;
+    if (!canvas) return;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (canvas.width !== pageW * dpr || canvas.height !== pageH * dpr) {
+      canvas.width = pageW * dpr;
+      canvas.height = pageH * dpr;
+    }
+  }, [pageW, pageH]);
+
   // Converte coordenadas de tela (clientX/Y) para coordenadas internas da página (0..pageW, 0..pageH)
   const clientToPageCoords = useCallback(
     (clientX: number, clientY: number): { x: number; y: number } => {
-      const el = activeCanvasRef.current;
-      if (!el) return { x: 0, y: 0 };
-      const rect = el.getBoundingClientRect();
+      let rect = cachedCanvasRectRef.current;
+      if (!rect && activeCanvasRef.current) {
+        rect = activeCanvasRef.current.getBoundingClientRect();
+        cachedCanvasRectRef.current = rect;
+      }
+      if (!rect || rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
       const scaleX = pageW / rect.width;
       const scaleY = pageH / rect.height;
       return {
@@ -278,7 +303,7 @@ export function PageCanvas({
     [pageW, pageH]
   );
 
-  // 1. Renderiza Camada 1: Papel Vetorial ou Página de PDF
+  // 1. Renderiza Camada 1: Papel Vetorial ou Página de PDF (somente quando template ou PDF mudam)
   useEffect(() => {
     const canvas = bgCanvasRef.current;
     if (!canvas) return;
@@ -296,32 +321,6 @@ export function PageCanvas({
     if (pdfPageDataUrl) {
       const img = new window.Image();
       img.onload = () => {
-        if (
-          img.naturalWidth > 0 &&
-          img.naturalHeight > 0 &&
-          (!page.customWidth || !page.customHeight)
-        ) {
-          const isLandscape = img.naturalWidth > img.naturalHeight;
-          const nextW = isLandscape
-            ? Math.round((768 * img.naturalWidth) / img.naturalHeight)
-            : 768;
-          const nextH = isLandscape
-            ? 768
-            : Math.round((768 * img.naturalHeight) / img.naturalWidth);
-
-          if (Math.abs(nextW - pageW) > 5 || Math.abs(nextH - pageH) > 5) {
-            onCommitPageUpdate(
-              (prev) => ({
-                ...prev,
-                orientation: isLandscape ? 'landscape' : 'portrait',
-                customWidth: nextW,
-                customHeight: nextH,
-              }),
-              false
-            );
-          }
-        }
-
         const c = bgCanvasRef.current;
         if (!c) return;
         const cCtx = c.getContext('2d');
@@ -335,16 +334,7 @@ export function PageCanvas({
     }
 
     ctx.restore();
-  }, [
-    page.template,
-    page.paperColor,
-    page.customWidth,
-    page.customHeight,
-    pageW,
-    pageH,
-    pdfPageDataUrl,
-    onCommitPageUpdate,
-  ]);
+  }, [page.template, page.paperColor, pageW, pageH, pdfPageDataUrl]);
 
   // 2. Renderiza Camada 2: Traços Finalizados (Marca-Texto embaixo + Formas + Caneta em cima)
   const renderStaticLayer = useCallback(() => {
@@ -441,16 +431,13 @@ export function PageCanvas({
 
   // 3. Renderiza Camada 4 (Wet Ink): Traço ativo, polígono do Laço, rascunho de Forma ou Laser Pointer
   const renderActiveWetLayer = useCallback(() => {
+    wetRenderRafRef.current = null;
     const canvas = activeCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    if (canvas.width !== pageW * dpr || canvas.height !== pageH * dpr) {
-      canvas.width = pageW * dpr;
-      canvas.height = pageH * dpr;
-    }
 
     ctx.save();
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -545,6 +532,21 @@ export function PageCanvas({
     pageH,
   ]);
 
+  // Agenda renderização da camada ativa sincronizada com o quadro de 120Hz (evita bloquear eventos intermediários)
+  const scheduleWetLayerRender = useCallback(() => {
+    if (wetRenderRafRef.current === null) {
+      wetRenderRafRef.current = requestAnimationFrame(renderActiveWetLayer);
+    }
+  }, [renderActiveWetLayer]);
+
+  const flushWetLayerRender = useCallback(() => {
+    if (wetRenderRafRef.current !== null) {
+      cancelAnimationFrame(wetRenderRafRef.current);
+      wetRenderRafRef.current = null;
+    }
+    renderActiveWetLayer();
+  }, [renderActiveWetLayer]);
+
   // Aplica a borracha na posição (x, y)
   const applyEraserAt = useCallback(
     (x: number, y: number) => {
@@ -618,27 +620,45 @@ export function PageCanvas({
   // ================= HANDLERS DE POINTER EVENTS (STYLUS, TOUCH, MOUSE) =================
 
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    e.currentTarget.setPointerCapture(e.pointerId);
-    activePointersRef.current.set(e.pointerId, {
-      x: e.clientX,
-      y: e.clientY,
-      type: e.pointerType,
-    });
+    // 1. Se a caneta (stylus) já está desenhando na tela, bloqueia 100% qualquer toque de mão/palma
+    if (
+      e.pointerType === 'touch' &&
+      drawingPointerIdRef.current !== null &&
+      drawingPointerTypeRef.current === 'pen'
+    ) {
+      return;
+    }
 
-    const pointerCount = activePointersRef.current.size;
-
-    // Registro de toques múltiplos para gestos de 2 dedos (Undo / Pinch) e 3 dedos (Redo)
+    // 2. Se for um evento de toque (dedo ou palma da mão):
     if (e.pointerType === 'touch') {
-      if (pointerCount > multiTouchCountRef.current) {
-        multiTouchCountRef.current = pointerCount;
+      activePointersRef.current.set(e.pointerId, {
+        x: e.clientX,
+        y: e.clientY,
+        type: e.pointerType,
+      });
+
+      const touchCount = activePointersRef.current.size;
+      if (touchCount > multiTouchCountRef.current) {
+        multiTouchCountRef.current = touchCount;
         multiTouchStartTimeRef.current = performance.now();
       }
 
-      if (pointerCount === 2) {
-        // Cancela qualquer risco acidental iniciado pelo 1º dedo
-        isDrawingRef.current = false;
-        activePointsRef.current = [];
-        renderActiveWetLayer();
+      // 2 dedos na tela (quando a caneta NÃO está riscando): Pinch-to-Zoom + Pan livre 2D
+      if (touchCount === 2) {
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+        // Se o 1º dedo havia começado um traço (no modo Dedo + Caneta), cancela o risco acidental
+        if (drawingPointerTypeRef.current === 'touch') {
+          isDrawingRef.current = false;
+          drawingPointerIdRef.current = null;
+          drawingPointerTypeRef.current = null;
+          activePointsRef.current = [];
+          flushWetLayerRender();
+        }
+        panStartRef.current = null;
 
         const pts = Array.from(activePointersRef.current.values());
         pinchInitialDistRef.current = Math.hypot(
@@ -654,8 +674,17 @@ export function PageCanvas({
         return;
       }
 
-      // Se Stylus-Only (Palm Rejection) estiver ativo ou estivermos em modo Somente Leitura, 1 dedo faz Pan
-      if (stylusOnlyMode || activeTool === 'readonly') {
+      if (touchCount > 2) {
+        return;
+      }
+
+      // Modo Somente Leitura: 1 dedo move a página livremente
+      if (activeTool === 'readonly') {
+        try {
+          e.currentTarget.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
         panStartRef.current = {
           clientX: e.clientX,
           clientY: e.clientY,
@@ -664,9 +693,44 @@ export function PageCanvas({
         };
         return;
       }
+
+      // MODO SÓ CANETA (Mão Bloqueada / Palm Rejection):
+      // Ignora completamente 1 toque (palma da mão apoiada ou 1 dedo) — não risca e não move a folha!
+      if (stylusOnlyMode) {
+        return;
+      }
+    }
+
+    // 3. Se a caneta tocou na tela, cancela imediatamente qualquer pan/pinch residual de toque da mão
+    if (e.pointerType === 'pen') {
+      activePointersRef.current.clear();
+      multiTouchCountRef.current = 0;
+      pinchInitialDistRef.current = null;
+      pinchInitialCenterRef.current = null;
+      panStartRef.current = null;
     }
 
     if (activeTool === 'readonly') return;
+
+    // Se já houver outro ponteiro desenhando (ex.: dedo enquanto outro dedo toca), ignora
+    if (
+      drawingPointerIdRef.current !== null &&
+      drawingPointerIdRef.current !== e.pointerId &&
+      e.pointerType !== 'pen'
+    ) {
+      return;
+    }
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+
+    // Faz cache único do retângulo do canvas no início do traço (evita getBoundingClientRect a 240Hz)
+    cachedCanvasRectRef.current = e.currentTarget.getBoundingClientRect();
+    drawingPointerIdRef.current = e.pointerId;
+    drawingPointerTypeRef.current = e.pointerType;
 
     const pt = clientToPageCoords(e.clientX, e.clientY);
 
@@ -679,6 +743,8 @@ export function PageCanvas({
 
     // Ferramenta Caixa de Texto: cria nova caixa no ponto clicado
     if (activeTool === 'text') {
+      drawingPointerIdRef.current = null;
+      drawingPointerTypeRef.current = null;
       const newBox: TextBoxElement = {
         id: createId('txt'),
         x: Math.min(pageW - 220, Math.max(24, pt.x - 40)),
@@ -732,7 +798,7 @@ export function PageCanvas({
         opacity: 1,
         rotation: 0,
       };
-      renderActiveWetLayer();
+      flushWetLayerRender();
       return;
     }
 
@@ -740,7 +806,7 @@ export function PageCanvas({
     if (activeTool === 'lasso') {
       isDrawingRef.current = true;
       lassoPointsRef.current = [pt];
-      renderActiveWetLayer();
+      flushWetLayerRender();
       return;
     }
 
@@ -782,62 +848,79 @@ export function PageCanvas({
           tiltY: e.tiltY,
         },
       ];
-      renderActiveWetLayer();
+      flushWetLayerRender();
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (activePointersRef.current.has(e.pointerId)) {
+    // Se a caneta está desenhando, ignora qualquer movimento de toque da mão/palma
+    if (
+      e.pointerType === 'touch' &&
+      drawingPointerIdRef.current !== null &&
+      drawingPointerTypeRef.current === 'pen'
+    ) {
+      return;
+    }
+
+    if (e.pointerType === 'touch' && activePointersRef.current.has(e.pointerId)) {
       activePointersRef.current.set(e.pointerId, {
         x: e.clientX,
         y: e.clientY,
         type: e.pointerType,
       });
+
+      // Pinch-to-Zoom + Pan livre simultâneo com 2 dedos (em qualquer direção: lados, cima, baixo, diagonal)
+      if (
+        activePointersRef.current.size === 2 &&
+        pinchInitialDistRef.current &&
+        pinchInitialCenterRef.current
+      ) {
+        const pts = Array.from(activePointersRef.current.values());
+        const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        const currentCenter = {
+          x: (pts[0].x + pts[1].x) / 2,
+          y: (pts[0].y + pts[1].y) / 2,
+        };
+        const factor =
+          pinchInitialDistRef.current > 12
+            ? dist / pinchInitialDistRef.current
+            : 1;
+        const nextZoom = Math.min(
+          4.0,
+          Math.max(0.25, pinchInitialZoomRef.current * factor)
+        );
+
+        const deltaX = currentCenter.x - pinchInitialCenterRef.current.x;
+        const deltaY = currentCenter.y - pinchInitialCenterRef.current.y;
+
+        onChangeZoomPan(nextZoom, {
+          x: pinchInitialPanRef.current.x + deltaX,
+          y: pinchInitialPanRef.current.y + deltaY,
+        });
+        return;
+      }
+
+      // Pan com 1 dedo (somente quando em modo Somente Leitura)
+      if (panStartRef.current && activeTool === 'readonly') {
+        const dx = e.clientX - panStartRef.current.clientX;
+        const dy = e.clientY - panStartRef.current.clientY;
+        onChangeZoomPan(zoom, {
+          x: panStartRef.current.panX + dx,
+          y: panStartRef.current.panY + dy,
+        });
+        return;
+      }
+
+      // Em Modo Só Caneta, 1 toque é palma/dedo: ignora totalmente
+      if (stylusOnlyMode) {
+        return;
+      }
     }
 
-    // Pinch-to-Zoom + Pan livre simultâneo com 2 dedos (em qualquer direção: lados, cima, baixo, diagonal)
-    if (
-      activePointersRef.current.size === 2 &&
-      pinchInitialDistRef.current &&
-      pinchInitialCenterRef.current
-    ) {
-      const pts = Array.from(activePointersRef.current.values());
-      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-      const currentCenter = {
-        x: (pts[0].x + pts[1].x) / 2,
-        y: (pts[0].y + pts[1].y) / 2,
-      };
-      const factor =
-        pinchInitialDistRef.current > 12
-          ? dist / pinchInitialDistRef.current
-          : 1;
-      const nextZoom = Math.min(
-        4.0,
-        Math.max(0.25, pinchInitialZoomRef.current * factor)
-      );
-
-      const deltaX = currentCenter.x - pinchInitialCenterRef.current.x;
-      const deltaY = currentCenter.y - pinchInitialCenterRef.current.y;
-
-      onChangeZoomPan(nextZoom, {
-        x: pinchInitialPanRef.current.x + deltaX,
-        y: pinchInitialPanRef.current.y + deltaY,
-      });
+    // Só processa desenho se este evento vier exatamente do ponteiro ativo de escrita
+    if (!isDrawingRef.current || e.pointerId !== drawingPointerIdRef.current) {
       return;
     }
-
-    // Pan com 1 dedo (quando em Stylus-Only ou Read-Only)
-    if (panStartRef.current) {
-      const dx = e.clientX - panStartRef.current.clientX;
-      const dy = e.clientY - panStartRef.current.clientY;
-      onChangeZoomPan(zoom, {
-        x: panStartRef.current.panX + dx,
-        y: panStartRef.current.panY + dy,
-      });
-      return;
-    }
-
-    if (!isDrawingRef.current) return;
 
     const pt = clientToPageCoords(e.clientX, e.clientY);
 
@@ -852,13 +935,13 @@ export function PageCanvas({
         x2: pt.x,
         y2: pt.y,
       };
-      renderActiveWetLayer();
+      scheduleWetLayerRender();
       return;
     }
 
     if (activeTool === 'lasso') {
       lassoPointsRef.current.push(pt);
-      renderActiveWetLayer();
+      scheduleWetLayerRender();
       return;
     }
 
@@ -879,25 +962,51 @@ export function PageCanvas({
           x2: pt.x,
           y2: pt.y,
         };
-        renderActiveWetLayer();
+        scheduleWetLayerRender();
         return;
       }
 
-      // Captura eventos coalescidos (120Hz/240Hz de Apple Pencil / S-Pen)
+      // Captura eventos coalescidos (120Hz/240Hz de Apple Pencil / S-Pen) sem layout reflow
       const nativeEvent = e.nativeEvent as PointerEvent;
       const coalesced =
         typeof nativeEvent.getCoalescedEvents === 'function'
           ? nativeEvent.getCoalescedEvents()
-          : [nativeEvent];
+          : null;
 
-      for (const ce of coalesced) {
-        const cPt = clientToPageCoords(ce.clientX, ce.clientY);
+      if (coalesced && coalesced.length > 0) {
+        for (let i = 0; i < coalesced.length; i++) {
+          const ce = coalesced[i];
+          const cPt = clientToPageCoords(ce.clientX, ce.clientY);
+          const pressure =
+            ce.pointerType === 'pen'
+              ? Math.max(0.08, ce.pressure || 0.5)
+              : 0.5;
+
+          if (
+            activeTool === 'highlighter' &&
+            straightLineHighlighter &&
+            activePointsRef.current.length > 0
+          ) {
+            const start = activePointsRef.current[0];
+            activePointsRef.current = [
+              start,
+              { x: cPt.x, y: start.y, pressure: 0.5 },
+            ];
+          } else {
+            activePointsRef.current.push({
+              x: cPt.x,
+              y: cPt.y,
+              pressure,
+              tiltX: ce.tiltX,
+              tiltY: ce.tiltY,
+            });
+          }
+        }
+      } else {
         const pressure =
-          ce.pointerType === 'pen'
-            ? Math.max(0.08, ce.pressure || 0.5)
+          e.pointerType === 'pen'
+            ? Math.max(0.08, e.pressure || 0.5)
             : 0.5;
-
-        // Se Marca-Texto estiver com "Linha Reta" ativa, nivela o Y com o ponto inicial
         if (
           activeTool === 'highlighter' &&
           straightLineHighlighter &&
@@ -906,20 +1015,20 @@ export function PageCanvas({
           const start = activePointsRef.current[0];
           activePointsRef.current = [
             start,
-            { x: cPt.x, y: start.y, pressure: 0.5 },
+            { x: pt.x, y: start.y, pressure: 0.5 },
           ];
         } else {
           activePointsRef.current.push({
-            x: cPt.x,
-            y: cPt.y,
+            x: pt.x,
+            y: pt.y,
             pressure,
-            tiltX: ce.tiltX,
-            tiltY: ce.tiltY,
+            tiltX: e.tiltX,
+            tiltY: e.tiltY,
           });
         }
       }
 
-      renderActiveWetLayer();
+      scheduleWetLayerRender();
 
       // Reinicia o timer de Hold-to-Snap Shape (420ms parado no final do traço)
       if (holdTimerRef.current) clearTimeout(holdTimerRef.current);
@@ -934,7 +1043,7 @@ export function PageCanvas({
           );
           if (recognized) {
             snappedShapeRef.current = recognized;
-            renderActiveWetLayer();
+            flushWetLayerRender();
           }
         }, 420);
       }
@@ -961,7 +1070,7 @@ export function PageCanvas({
     if (activeTool === 'shape' && draftShapeRef.current) {
       const committedShape = draftShapeRef.current;
       draftShapeRef.current = null;
-      renderActiveWetLayer();
+      flushWetLayerRender();
       if (
         Math.hypot(
           committedShape.x2 - committedShape.x1,
@@ -983,7 +1092,7 @@ export function PageCanvas({
     if (activeTool === 'lasso') {
       const poly = lassoPointsRef.current;
       lassoPointsRef.current = [];
-      renderActiveWetLayer();
+      flushWetLayerRender();
 
       if (poly.length < 4) return;
 
@@ -1093,7 +1202,7 @@ export function PageCanvas({
         const finalShape = snappedShapeRef.current;
         snappedShapeRef.current = null;
         activePointsRef.current = [];
-        renderActiveWetLayer();
+        flushWetLayerRender();
         onCommitPageUpdate(
           (prev) => ({
             ...prev,
@@ -1107,7 +1216,7 @@ export function PageCanvas({
 
       const pts = activePointsRef.current;
       activePointsRef.current = [];
-      renderActiveWetLayer();
+      flushWetLayerRender();
 
       if (pts.length === 0) return;
 
@@ -1138,29 +1247,51 @@ export function PageCanvas({
   const handlePointerUpOrCancel = (
     e: React.PointerEvent<HTMLCanvasElement>
   ) => {
-    activePointersRef.current.delete(e.pointerId);
+    if (e.pointerType === 'touch') {
+      activePointersRef.current.delete(e.pointerId);
 
-    // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo) apenas se os dedos não arrastaram a tela
-    if (activePointersRef.current.size === 0 && multiTouchCountRef.current >= 2) {
-      const elapsed = performance.now() - multiTouchStartTimeRef.current;
-      const movedDist = Math.hypot(
-        pan.x - pinchInitialPanRef.current.x,
-        pan.y - pinchInitialPanRef.current.y
-      );
-      if (elapsed < 260 && movedDist < 14) {
-        if (multiTouchCountRef.current === 2) {
-          onUndo();
-        } else if (multiTouchCountRef.current >= 3) {
-          onRedo();
-        }
+      // Se a caneta estiver desenhando agora, o levantar da palma da mão NÃO deve finalizar o traço da caneta!
+      if (
+        drawingPointerIdRef.current !== null &&
+        drawingPointerTypeRef.current === 'pen'
+      ) {
+        return;
       }
-      multiTouchCountRef.current = 0;
-      pinchInitialDistRef.current = null;
-      pinchInitialCenterRef.current = null;
+
+      // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo) apenas se os dedos não arrastaram a tela
+      if (activePointersRef.current.size === 0 && multiTouchCountRef.current >= 2) {
+        const elapsed = performance.now() - multiTouchStartTimeRef.current;
+        const movedDist = Math.hypot(
+          pan.x - pinchInitialPanRef.current.x,
+          pan.y - pinchInitialPanRef.current.y
+        );
+        if (elapsed < 260 && movedDist < 14) {
+          if (multiTouchCountRef.current === 2) {
+            onUndo();
+          } else if (multiTouchCountRef.current >= 3) {
+            onRedo();
+          }
+        }
+        multiTouchCountRef.current = 0;
+        pinchInitialDistRef.current = null;
+        pinchInitialCenterRef.current = null;
+      }
+
+      if (activePointersRef.current.size < 2) {
+        pinchInitialDistRef.current = null;
+        pinchInitialCenterRef.current = null;
+      }
+      if (activePointersRef.current.size === 0) {
+        panStartRef.current = null;
+      }
     }
 
-    panStartRef.current = null;
-    finishStrokeOrInteraction();
+    // Só finaliza o traço se o ponteiro que levantou for de fato o ponteiro que estava desenhando
+    if (e.pointerId === drawingPointerIdRef.current) {
+      drawingPointerIdRef.current = null;
+      drawingPointerTypeRef.current = null;
+      finishStrokeOrInteraction();
+    }
   };
 
   // ================= OPERAÇÕES DO LAÇO (MOVER, COLORIR, DUPLICAR, CAPTURAR, EXCLUIR) =================
