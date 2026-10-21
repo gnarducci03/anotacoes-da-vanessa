@@ -671,11 +671,45 @@ export function PageCanvas({
           });
         }
 
+        // Se nenhum traço ou forma foi atingido neste movimento, permite que a Borracha também apague Post-its/Figurinhas ou Caixas de Texto tocadas diretamente!
+        let nextImages = prev.images;
+        let nextTextBoxes = prev.textBoxes;
+        if (!changed && !didEraseDuringStrokeRef.current && !eraseHighlighterOnly) {
+          nextTextBoxes = prev.textBoxes.filter((tb) => {
+            const hit =
+              x >= tb.x &&
+              x <= tb.x + tb.width &&
+              y >= tb.y &&
+              y <= tb.y + tb.height;
+            if (hit) {
+              changed = true;
+              didEraseDuringStrokeRef.current = true;
+            }
+            return !hit;
+          });
+          if (!changed) {
+            nextImages = prev.images.filter((im) => {
+              const hit =
+                x >= im.x &&
+                x <= im.x + im.width &&
+                y >= im.y &&
+                y <= im.y + im.height;
+              if (hit) {
+                changed = true;
+                didEraseDuringStrokeRef.current = true;
+              }
+              return !hit;
+            });
+          }
+        }
+
         if (!changed) return prev;
         return {
           ...prev,
           strokes: nextStrokes,
           shapes: nextShapes,
+          images: nextImages,
+          textBoxes: nextTextBoxes,
           updatedAt: Date.now(),
         };
       }, false);
@@ -808,34 +842,41 @@ export function PageCanvas({
         return;
       }
 
-      // 1 dedo tocou na página: verifica se tocou em cima de uma Caixa de Texto ou Post-it/Sticker para selecioná-lo!
-      for (let i = page.textBoxes.length - 1; i >= 0; i--) {
-        const tb = page.textBoxes[i];
-        if (
-          pt.x >= tb.x &&
-          pt.x <= tb.x + tb.width &&
-          pt.y >= tb.y &&
-          pt.y <= tb.y + tb.height
-        ) {
-          setSelectedElement({ kind: 'textBox', id: tb.id });
-          return;
+      // 1 dedo tocou na página (quando não está usando Borracha ou Laço): verifica se tocou em cima de uma Caixa de Texto ou Post-it/Sticker para selecioná-lo!
+      if (activeTool !== 'eraser' && activeTool !== 'lasso') {
+        for (let i = page.textBoxes.length - 1; i >= 0; i--) {
+          const tb = page.textBoxes[i];
+          if (
+            pt.x >= tb.x &&
+            pt.x <= tb.x + tb.width &&
+            pt.y >= tb.y &&
+            pt.y <= tb.y + tb.height
+          ) {
+            setSelectedElement({ kind: 'textBox', id: tb.id });
+            return;
+          }
         }
-      }
-      for (let i = page.images.length - 1; i >= 0; i--) {
-        const im = page.images[i];
-        if (
-          pt.x >= im.x &&
-          pt.x <= im.x + im.width &&
-          pt.y >= im.y &&
-          pt.y <= im.y + im.height
-        ) {
-          setSelectedElement({ kind: 'image', id: im.id });
-          return;
+        for (let i = page.images.length - 1; i >= 0; i--) {
+          const im = page.images[i];
+          if (
+            pt.x >= im.x &&
+            pt.x <= im.x + im.width &&
+            pt.y >= im.y &&
+            pt.y <= im.y + im.height
+          ) {
+            setSelectedElement({ kind: 'image', id: im.id });
+            return;
+          }
         }
       }
 
-      // Se a ferramenta ativa for Caixa de Texto ('text'), permite criar a caixa tocando com o dedo mesmo no modo Só Caneta!
-      if (stylusOnlyMode && activeTool !== 'text') {
+      // Se a ferramenta ativa for Caixa de Texto ('text'), Borracha ('eraser') ou Laço ('lasso'), permite operar com o dedo mesmo no modo Só Caneta!
+      if (
+        stylusOnlyMode &&
+        activeTool !== 'text' &&
+        activeTool !== 'eraser' &&
+        activeTool !== 'lasso'
+      ) {
         setSelectedElement(null);
         return;
       }
@@ -853,9 +894,11 @@ export function PageCanvas({
 
     if (activeTool === 'readonly') return;
 
-    // Se clicou com mouse ou se está na ferramenta 'text'/'image', verifica se clicou em um Post-it/Sticker ou TextBox existente
+    // Se clicou com mouse (fora de Borracha/Laço) ou se está na ferramenta 'text'/'image', verifica se clicou em um Post-it/Sticker ou TextBox existente
     if (
-      e.pointerType === 'mouse' ||
+      (e.pointerType === 'mouse' &&
+        activeTool !== 'eraser' &&
+        activeTool !== 'lasso') ||
       activeTool === 'text' ||
       activeTool === 'image'
     ) {
@@ -1115,8 +1158,12 @@ export function PageCanvas({
         return;
       }
 
-      // Em Modo Só Caneta, 1 toque é palma/dedo: ignora totalmente
-      if (stylusOnlyMode) {
+      // Em Modo Só Caneta, 1 toque é palma/dedo: ignora escrita de caneta/marca-texto (mas permite Borracha e Laço)
+      if (
+        stylusOnlyMode &&
+        activeTool !== 'eraser' &&
+        activeTool !== 'lasso'
+      ) {
         return;
       }
     }
@@ -1955,6 +2002,8 @@ export function PageCanvas({
                 className={`absolute select-none group ${
                   isSelected
                     ? 'pointer-events-auto ring-2 ring-accent shadow-xl rounded-lg'
+                    : activeTool === 'eraser' || activeTool === 'lasso'
+                    ? 'pointer-events-none'
                     : 'pointer-events-auto hover:ring-1 hover:ring-accent/40'
                 }`}
               >
@@ -1986,7 +2035,7 @@ export function PageCanvas({
                     WebkitUserSelect: 'text',
                   }}
                   className={`absolute inset-0 w-full h-full bg-transparent resize-none px-3 pb-2 focus:outline-none font-medium leading-snug ${
-                    isSelected || (im.text && im.text.trim().length > 0)
+                    isSelected && activeTool !== 'eraser' && activeTool !== 'lasso'
                       ? 'pointer-events-auto'
                       : 'pointer-events-none'
                   }`}
@@ -2122,7 +2171,11 @@ export function PageCanvas({
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteImageElement(im.id)}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteImageElement(im.id);
+                        }}
                         className="p-1.5 rounded-lg hover:bg-red-500/15 text-[#FF3B30]"
                         title="Excluir figurinha"
                       >
@@ -2205,7 +2258,7 @@ export function PageCanvas({
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUpOrCancel}
           onPointerCancel={handlePointerUpOrCancel}
-          className={`absolute inset-0 z-25 ${
+          className={`absolute inset-0 z-[25] ${
             activeTool === 'eraser'
               ? 'cursor-none'
               : activeTool === 'text'
@@ -2247,10 +2300,17 @@ export function PageCanvas({
                   transform: `rotate(${tb.rotation || 0}deg)`,
                 }}
                 onPointerDown={(e) => {
+                  if (activeTool === 'eraser' || activeTool === 'lasso') {
+                    return;
+                  }
                   e.stopPropagation();
                   setSelectedElement({ kind: 'textBox', id: tb.id });
                 }}
-                className={`absolute pointer-events-auto rounded-xl transition-shadow ${
+                className={`absolute rounded-xl transition-shadow ${
+                  activeTool === 'eraser' || activeTool === 'lasso'
+                    ? 'pointer-events-none'
+                    : 'pointer-events-auto'
+                } ${
                   isSelected
                     ? 'ring-2 ring-accent bg-white/85 dark:bg-zinc-900/85 shadow-xl z-40'
                     : matchesSearch
@@ -2266,6 +2326,9 @@ export function PageCanvas({
                     style={{ backgroundColor: 'var(--bg-surface)' }}
                     onPointerDown={(e) => {
                       e.stopPropagation();
+                      if ((e.target as HTMLElement)?.closest('button')) {
+                        return;
+                      }
                       const startX = e.clientX;
                       const startY = e.clientY;
                       const origX = tb.x;
@@ -2368,14 +2431,23 @@ export function PageCanvas({
                     </button>
                     <button
                       type="button"
-                      onClick={() => deleteTextBox(tb.id)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteTextBox(tb.id);
+                      }}
                       className="p-1 rounded hover:bg-red-500/10 text-[#FF3B30]"
+                      title="Excluir caixa de texto"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSelectedElement(null)}
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedElement(null);
+                      }}
                       className="px-2 py-0.5 rounded-lg bg-accent text-white font-semibold ml-1"
                     >
                       OK

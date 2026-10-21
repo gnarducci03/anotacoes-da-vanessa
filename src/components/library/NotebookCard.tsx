@@ -27,6 +27,7 @@ interface NotebookCardProps {
   onMove: (notebook: NotebookRecord) => void;
   onDuplicate: (notebook: NotebookRecord) => void;
   onTrashOrDelete: (notebook: NotebookRecord) => void;
+  onDeletePermanently?: (notebook: NotebookRecord) => void;
   onRestore?: (notebook: NotebookRecord) => void;
 }
 
@@ -43,6 +44,7 @@ export function NotebookCard({
   onMove,
   onDuplicate,
   onTrashOrDelete,
+  onDeletePermanently,
   onRestore,
 }: NotebookCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -163,7 +165,7 @@ export function NotebookCard({
           <button
             onClick={() => onTrashOrDelete(notebook)}
             className="p-2 rounded-lg hover:bg-red-500/10 text-[#FF3B30]"
-            title={notebook.isTrashed ? 'Excluir Permanentemente' : 'Mover para Lixeira'}
+            title={notebook.isTrashed ? 'Excluir Definitivamente' : 'Mover para Lixeira'}
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -173,7 +175,11 @@ export function NotebookCard({
   }
 
   return (
-    <div className="group relative flex flex-col items-center select-none">
+    <div
+      className={`group relative flex flex-col items-center select-none ${
+        menuOpen ? 'z-50' : 'z-10'
+      }`}
+    >
       {/* Capa realista proporção 3:4 estilo GoodNotes */}
       <div
         onClick={handleCardClick}
@@ -222,7 +228,7 @@ export function NotebookCard({
 
         {/* Etiqueta da capa */}
         <div
-          className="absolute left-7 right-4 top-6 rounded-lg px-3 py-2.5 shadow-sm backdrop-blur-sm"
+          className="absolute left-7 right-4 top-10 rounded-lg px-3 py-2.5 shadow-sm backdrop-blur-sm"
           style={{
             backgroundColor:
               preset.pattern === 'minimal'
@@ -242,24 +248,40 @@ export function NotebookCard({
         </div>
 
         {/* Badge PDF caso seja documento importado */}
-        {notebook.pdfAssetId && (
+        {notebook.pdfAssetId && !notebook.isTrashed && (
           <div className="absolute bottom-2.5 right-2.5 px-2 py-0.5 rounded-md bg-black/65 text-white text-[10px] font-bold flex items-center gap-1 backdrop-blur-sm">
             <FileText className="w-3 h-3" />
             PDF
           </div>
         )}
 
+        {/* Botão Rápido de Excluir / Lixeira no topo esquerdo da capa (sempre visível para facilitar no tablet) */}
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTrashOrDelete(notebook);
+          }}
+          className="absolute top-2 left-6 z-20 p-1.5 rounded-full bg-black/35 hover:bg-[#FF3B30] text-white transition-colors shadow-sm"
+          title={
+            notebook.isTrashed
+              ? 'Excluir Definitivamente'
+              : 'Apagar Caderno (Mover para Lixeira)'
+          }
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+
         {/* Estrela de Favorito no topo direito */}
         <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onToggleFavorite(notebook);
           }}
-          className={`absolute top-2 right-2 z-20 p-1.5 rounded-full transition-opacity ${
-            notebook.isFavorite
-              ? 'opacity-100 bg-black/25'
-              : 'opacity-0 group-hover:opacity-100 bg-black/25'
-          }`}
+          className="absolute top-2 right-2 z-20 p-1.5 rounded-full bg-black/35 hover:bg-black/55 transition-colors shadow-sm"
           title="Favoritar Caderno"
         >
           <Star
@@ -270,6 +292,34 @@ export function NotebookCard({
             }`}
           />
         </button>
+
+        {/* Ações diretas na capa quando estiver na Lixeira */}
+        {notebook.isTrashed && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-5 bottom-2.5 z-20 flex flex-col gap-1.5"
+          >
+            {onRestore && (
+              <button
+                type="button"
+                onClick={() => onRestore(notebook)}
+                className="w-full py-1.5 rounded-lg bg-white/95 text-accent text-[11px] font-bold shadow flex items-center justify-center gap-1"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Restaurar
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onTrashOrDelete(notebook)}
+              className="w-full py-1.5 rounded-lg bg-[#FF3B30] text-white text-[11px] font-bold shadow flex items-center justify-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              Excluir
+            </button>
+          </div>
+        )}
 
         {/* Checkbox de seleção múltipla */}
         {selectionMode && (
@@ -287,20 +337,23 @@ export function NotebookCard({
 
       {/* Título e menu abaixo da capa (estilo GoodNotes) */}
       <div className="w-full mt-2.5 px-1 flex flex-col items-center text-center relative">
-        <div className="flex items-center justify-center gap-1 max-w-full">
+        <div className="flex items-center justify-center gap-1.5 max-w-full">
           <button
+            type="button"
             onClick={() => onRename(notebook)}
-            className="font-medium text-[13px] text-primary truncate hover:text-accent transition-colors max-w-[135px]"
+            className="font-medium text-[13px] text-primary truncate hover:text-accent transition-colors max-w-[125px]"
             title="Toque para renomear"
           >
             {notebook.title}
           </button>
           <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpen((prev) => !prev);
             }}
-            className="p-1 rounded-full text-secondary hover:bg-dock hover:text-primary transition-colors"
+            className="p-1.5 rounded-full bg-dock/70 text-primary hover:bg-dock transition-colors flex-shrink-0"
             title="Opções do caderno"
           >
             <MoreHorizontal className="w-4 h-4" />
@@ -310,21 +363,34 @@ export function NotebookCard({
           {formattedDate} • {pageCount} {pageCount === 1 ? 'pág' : 'págs'}
         </span>
 
-        {/* Popover de ações do caderno */}
+        {/* Popover de ações do caderno (abre para cima sobre a capa para nunca cortar na tela) */}
         {menuOpen && (
           <>
             <div
-              className="fixed inset-0 z-30"
-              onClick={() => setMenuOpen(false)}
+              className="fixed inset-0 z-40"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+              }}
             />
-            <div className="absolute top-7 right-0 z-40 w-48 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] py-1.5 text-left text-xs animate-in fade-in zoom-in-95 duration-100">
+            <div
+              style={{ backgroundColor: 'var(--bg-surface)' }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute bottom-11 left-1/2 -translate-x-1/2 z-50 w-52 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] py-1.5 text-left text-xs"
+            >
               {notebook.isTrashed && onRestore ? (
                 <button
+                  type="button"
                   onClick={() => {
                     setMenuOpen(false);
                     onRestore(notebook);
                   }}
-                  className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-dock text-accent font-medium"
+                  className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-dock text-accent font-semibold"
                 >
                   <RotateCcw className="w-4 h-4" />
                   Restaurar Caderno
@@ -332,6 +398,7 @@ export function NotebookCard({
               ) : (
                 <>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onRename(notebook);
@@ -342,6 +409,7 @@ export function NotebookCard({
                     Renomear
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onToggleFavorite(notebook);
@@ -352,6 +420,7 @@ export function NotebookCard({
                     {notebook.isFavorite ? 'Remover Favorito' : 'Adicionar Favorito'}
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onMove(notebook);
@@ -362,6 +431,7 @@ export function NotebookCard({
                     Mover para Pasta...
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onDuplicate(notebook);
@@ -375,15 +445,29 @@ export function NotebookCard({
               )}
               <div className="my-1 border-t border-[var(--border-subtle)]" />
               <button
+                type="button"
                 onClick={() => {
                   setMenuOpen(false);
                   onTrashOrDelete(notebook);
                 }}
-                className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-red-500/10 text-[#FF3B30] font-medium"
+                className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-red-500/10 text-[#FF3B30] font-semibold"
               >
                 <Trash2 className="w-4 h-4" />
                 {notebook.isTrashed ? 'Excluir Definitivamente' : 'Mover para Lixeira'}
               </button>
+              {!notebook.isTrashed && onDeletePermanently && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDeletePermanently(notebook);
+                  }}
+                  className="w-full px-3.5 py-2 flex items-center gap-2.5 hover:bg-red-500/15 text-[#FF3B30] font-bold"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Excluir Definitivamente
+                </button>
+              )}
             </div>
           </>
         )}

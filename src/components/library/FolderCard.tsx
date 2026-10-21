@@ -23,6 +23,7 @@ interface FolderCardProps {
   onRename: (folder: FolderRecord) => void;
   onMove: (folder: FolderRecord) => void;
   onTrashOrDelete: (folder: FolderRecord) => void;
+  onDeletePermanently?: (folder: FolderRecord) => void;
   onRestore?: (folder: FolderRecord) => void;
 }
 
@@ -38,6 +39,7 @@ export function FolderCard({
   onRename,
   onMove,
   onTrashOrDelete,
+  onDeletePermanently,
   onRestore,
 }: FolderCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -128,7 +130,11 @@ export function FolderCard({
   }
 
   return (
-    <div className="group relative flex flex-col items-center select-none">
+    <div
+      className={`group relative flex flex-col items-center select-none ${
+        menuOpen ? 'z-50' : 'z-10'
+      }`}
+    >
       <div
         onClick={handleClick}
         className={`relative w-full aspect-[3/4] flex items-center justify-center cursor-pointer transition-transform duration-200 ${
@@ -165,21 +171,40 @@ export function FolderCard({
         </svg>
 
         {/* Contador de itens dentro da pasta */}
-        <span className="absolute bottom-7 text-[11px] font-semibold text-sky-950/75 bg-white/45 px-2.5 py-0.5 rounded-full backdrop-blur-sm">
-          {itemCount} {itemCount === 1 ? 'item' : 'itens'}
-        </span>
+        {!folder.isTrashed && (
+          <span className="absolute bottom-7 text-[11px] font-semibold text-sky-950/75 bg-white/45 px-2.5 py-0.5 rounded-full backdrop-blur-sm">
+            {itemCount} {itemCount === 1 ? 'item' : 'itens'}
+          </span>
+        )}
+
+        {/* Botão Rápido de Excluir / Lixeira no topo esquerdo da pasta */}
+        <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTrashOrDelete(folder);
+          }}
+          className="absolute top-4 left-4 z-20 p-1.5 rounded-full bg-black/25 hover:bg-[#FF3B30] text-white transition-colors shadow-sm"
+          title={
+            folder.isTrashed
+              ? 'Excluir Definitivamente'
+              : 'Apagar Pasta (Mover para Lixeira)'
+          }
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
 
         {/* Estrela de favorito */}
         <button
+          type="button"
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={(e) => {
             e.stopPropagation();
             onToggleFavorite(folder);
           }}
-          className={`absolute top-4 right-4 p-1.5 rounded-full transition-opacity ${
-            folder.isFavorite
-              ? 'opacity-100 bg-black/15'
-              : 'opacity-0 group-hover:opacity-100 bg-black/15'
-          }`}
+          className="absolute top-4 right-4 z-20 p-1.5 rounded-full bg-black/25 hover:bg-black/45 transition-colors shadow-sm"
+          title="Favoritar Pasta"
         >
           <Star
             className={`w-3.5 h-3.5 ${
@@ -189,6 +214,33 @@ export function FolderCard({
             }`}
           />
         </button>
+
+        {folder.isTrashed && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            className="absolute inset-x-5 bottom-4 z-20 flex flex-col gap-1.5"
+          >
+            {onRestore && (
+              <button
+                type="button"
+                onClick={() => onRestore(folder)}
+                className="w-full py-1.5 rounded-lg bg-white/95 text-accent text-[11px] font-bold shadow flex items-center justify-center gap-1"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Restaurar
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onTrashOrDelete(folder)}
+              className="w-full py-1.5 rounded-lg bg-[#FF3B30] text-white text-[11px] font-bold shadow flex items-center justify-center gap-1"
+            >
+              <Trash2 className="w-3 h-3" />
+              Excluir
+            </button>
+          </div>
+        )}
 
         {selectionMode && (
           <div className="absolute bottom-5 left-5">
@@ -204,19 +256,23 @@ export function FolderCard({
       </div>
 
       <div className="w-full mt-1 px-1 flex flex-col items-center text-center relative">
-        <div className="flex items-center justify-center gap-1 max-w-full">
+        <div className="flex items-center justify-center gap-1.5 max-w-full">
           <button
+            type="button"
             onClick={() => onRename(folder)}
-            className="font-medium text-[13px] text-primary truncate hover:text-accent max-w-[135px]"
+            className="font-medium text-[13px] text-primary truncate hover:text-accent max-w-[125px]"
           >
             {folder.name}
           </button>
           <button
+            type="button"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               setMenuOpen((prev) => !prev);
             }}
-            className="p-1 rounded-full text-secondary hover:bg-dock"
+            className="p-1.5 rounded-full bg-dock/70 text-primary hover:bg-dock flex-shrink-0"
+            title="Opções da pasta"
           >
             <MoreHorizontal className="w-4 h-4" />
           </button>
@@ -226,17 +282,30 @@ export function FolderCard({
         {menuOpen && (
           <>
             <div
-              className="fixed inset-0 z-30"
-              onClick={() => setMenuOpen(false)}
+              className="fixed inset-0 z-40"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen(false);
+              }}
             />
-            <div className="absolute top-7 right-0 z-40 w-44 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] py-1.5 text-left text-xs">
+            <div
+              style={{ backgroundColor: 'var(--bg-surface)' }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute bottom-11 left-1/2 -translate-x-1/2 z-50 w-52 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] py-1.5 text-left text-xs"
+            >
               {folder.isTrashed && onRestore ? (
                 <button
+                  type="button"
                   onClick={() => {
                     setMenuOpen(false);
                     onRestore(folder);
                   }}
-                  className="w-full px-3.5 py-2 flex items-center gap-2 hover:bg-dock text-accent font-medium"
+                  className="w-full px-3.5 py-2.5 flex items-center gap-2 hover:bg-dock text-accent font-semibold"
                 >
                   <RotateCcw className="w-4 h-4" />
                   Restaurar Pasta
@@ -244,6 +313,7 @@ export function FolderCard({
               ) : (
                 <>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onRename(folder);
@@ -254,6 +324,7 @@ export function FolderCard({
                     Renomear Pasta
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onToggleFavorite(folder);
@@ -264,6 +335,7 @@ export function FolderCard({
                     {folder.isFavorite ? 'Remover Favorito' : 'Favoritar'}
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setMenuOpen(false);
                       onMove(folder);
@@ -277,15 +349,29 @@ export function FolderCard({
               )}
               <div className="my-1 border-t border-[var(--border-subtle)]" />
               <button
+                type="button"
                 onClick={() => {
                   setMenuOpen(false);
                   onTrashOrDelete(folder);
                 }}
-                className="w-full px-3.5 py-2 flex items-center gap-2 hover:bg-red-500/10 text-[#FF3B30] font-medium"
+                className="w-full px-3.5 py-2 flex items-center gap-2 hover:bg-red-500/10 text-[#FF3B30] font-semibold"
               >
                 <Trash2 className="w-4 h-4" />
                 {folder.isTrashed ? 'Excluir Definitivamente' : 'Mover para Lixeira'}
               </button>
+              {!folder.isTrashed && onDeletePermanently && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onDeletePermanently(folder);
+                  }}
+                  className="w-full px-3.5 py-2 flex items-center gap-2 hover:bg-red-500/15 text-[#FF3B30] font-bold"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Excluir Definitivamente
+                </button>
+              )}
             </div>
           </>
         )}

@@ -54,6 +54,8 @@ interface LibraryViewProps {
   onOpenDriveModal?: () => void;
   driveUserEmail?: string | null;
   driveSyncStatus?: 'idle' | 'syncing' | 'synced' | 'error';
+  onRefreshData?: () => Promise<void> | void;
+  onShowToast?: (msg: string) => void;
 }
 
 type NavSection = 'documents' | 'favorites' | 'trash';
@@ -74,6 +76,8 @@ export function LibraryView({
   onOpenDriveModal,
   driveUserEmail,
   driveSyncStatus = 'idle',
+  onRefreshData,
+  onShowToast,
 }: LibraryViewProps) {
   const [navSection, setNavSection] = useState<NavSection>('documents');
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -273,6 +277,7 @@ export function LibraryView({
       await db.notebooks.add(newNotebook);
       await db.pages.add(firstPage);
     });
+    await onRefreshData?.();
 
     onOpenNotebook(newNotebook, 0);
   };
@@ -312,8 +317,10 @@ export function LibraryView({
       createdAt: now,
       updatedAt: now,
     });
+    await onRefreshData?.();
     setNewFolderName('');
     setNewFolderModalOpen(false);
+    onShowToast?.(`Pasta "${name}" criada!`);
   };
 
   // Favoritar Caderno ou Pasta
@@ -322,6 +329,7 @@ export function LibraryView({
       isFavorite: !nb.isFavorite,
       updatedAt: Date.now(),
     });
+    await onRefreshData?.();
   };
 
   const handleToggleFolderFavorite = async (folder: FolderRecord) => {
@@ -329,6 +337,7 @@ export function LibraryView({
       isFavorite: !folder.isFavorite,
       updatedAt: Date.now(),
     });
+    await onRefreshData?.();
   };
 
   // Confirmar Renomeação
@@ -349,6 +358,7 @@ export function LibraryView({
         updatedAt: Date.now(),
       });
     }
+    await onRefreshData?.();
     setRenameTarget(null);
   };
 
@@ -366,6 +376,7 @@ export function LibraryView({
         updatedAt: Date.now(),
       });
     }
+    await onRefreshData?.();
     setMoveTarget(null);
   };
 
@@ -395,6 +406,35 @@ export function LibraryView({
       }));
       await db.pages.bulkAdd(clonedPages);
     });
+    await onRefreshData?.();
+    onShowToast?.(`Caderno "${nb.title}" duplicado!`);
+  };
+
+  // Exclusão Definitiva de um Caderno
+  const handleDeleteNotebookPermanently = async (nb: NotebookRecord) => {
+    await db.transaction(
+      'rw',
+      db.notebooks,
+      db.pages,
+      db.assets,
+      async () => {
+        await db.pages.where('notebookId').equals(nb.id).delete();
+        await db.notebooks.delete(nb.id);
+        if (nb.pdfAssetId) {
+          const othersUsingSamePdf = await db.notebooks
+            .filter(
+              (other) =>
+                other.id !== nb.id && other.pdfAssetId === nb.pdfAssetId
+            )
+            .count();
+          if (othersUsingSamePdf === 0) {
+            await db.assets.delete(nb.pdfAssetId);
+          }
+        }
+      }
+    );
+    await onRefreshData?.();
+    onShowToast?.(`Caderno "${nb.title}" excluído definitivamente!`);
   };
 
   // Lixeira / Exclusão Definitiva (com limpeza de PDF órfão caso nenhum outro caderno o utilize)
@@ -404,25 +444,10 @@ export function LibraryView({
         isTrashed: true,
         updatedAt: Date.now(),
       });
+      await onRefreshData?.();
+      onShowToast?.(`"${nb.title}" movido para a Lixeira.`);
     } else {
-      await db.transaction(
-        'rw',
-        db.notebooks,
-        db.pages,
-        db.assets,
-        async () => {
-          await db.pages.where('notebookId').equals(nb.id).delete();
-          await db.notebooks.delete(nb.id);
-          if (nb.pdfAssetId) {
-            const othersUsingSamePdf = await db.notebooks
-              .filter((other) => other.id !== nb.id && other.pdfAssetId === nb.pdfAssetId)
-              .count();
-            if (othersUsingSamePdf === 0) {
-              await db.assets.delete(nb.pdfAssetId);
-            }
-          }
-        }
-      );
+      await handleDeleteNotebookPermanently(nb);
     }
   };
 
@@ -431,24 +456,74 @@ export function LibraryView({
       isTrashed: false,
       updatedAt: Date.now(),
     });
+    await onRefreshData?.();
+    onShowToast?.(`"${nb.title}" restaurado!`);
+  };
+
+  // Exclusão Definitiva de uma Pasta (e dos cadernos/subpastas dentro dela)
+  const handleDeleteFolderPermanently = async (folder: FolderRecord) => {
+    const childNotebooks = notebooks.filter((n) => n.folderId === folder.id);
+    for (const nb of childNotebooks) {
+      await handleDeleteNotebookPermanently(nb);
+    }
+    await db.folders.delete(folder.id);
+    if (currentFolderId === folder.id) {
+      setCurrentFolderId(folder.parentId);
+    }
+    await onRefreshData?.();
+    onShowToast?.(`Pasta "${folder.name}" excluída definitivamente!`);
   };
 
   const handleTrashOrDeleteFolder = async (folder: FolderRecord) => {
     if (!folder.isTrashed) {
-      await db.folders.update(folder.id, {
-        isTrashed: true,
-        updatedAt: Date.now(),
+      const now = Date.now();
+      await db.transaction('rw', db.folders, db.notebooks, async () => {
+        await db.folders.update(folder.id, {
+          isTrashed: true,
+          updatedAt: now,
+        });
+        await db.notebooks
+          .where('folderId')
+          .equals(folder.id)
+          .modify({ isTrashed: true, updatedAt: now });
       });
+      if (currentFolderId === folder.id) {
+        setCurrentFolderId(folder.parentId);
+      }
+      await onRefreshData?.();
+      onShowToast?.(`Pasta "${folder.name}" movida para a Lixeira.`);
     } else {
-      await db.folders.delete(folder.id);
+      await handleDeleteFolderPermanently(folder);
     }
   };
 
   const handleRestoreFolder = async (folder: FolderRecord) => {
-    await db.folders.update(folder.id, {
-      isTrashed: false,
-      updatedAt: Date.now(),
+    const now = Date.now();
+    await db.transaction('rw', db.folders, db.notebooks, async () => {
+      await db.folders.update(folder.id, {
+        isTrashed: false,
+        updatedAt: now,
+      });
+      await db.notebooks
+        .where('folderId')
+        .equals(folder.id)
+        .modify({ isTrashed: false, updatedAt: now });
     });
+    await onRefreshData?.();
+    onShowToast?.(`Pasta "${folder.name}" restaurada!`);
+  };
+
+  const handleEmptyTrash = async () => {
+    const trashedNbs = notebooks.filter((n) => n.isTrashed);
+    const trashedFlds = folders.filter((f) => f.isTrashed);
+    for (const nb of trashedNbs) {
+      await handleDeleteNotebookPermanently(nb);
+    }
+    for (const fld of trashedFlds) {
+      await db.folders.delete(fld.id);
+    }
+    await onRefreshData?.();
+    onShowToast?.('Lixeira esvaziada!');
   };
 
   // Seleção múltipla
@@ -471,6 +546,20 @@ export function LibraryView({
     }
     setSelectedIds(new Set());
     setSelectionMode(false);
+    await onRefreshData?.();
+  };
+
+  const handleBulkDeletePermanently = async () => {
+    const ids = Array.from(selectedIds);
+    for (const id of ids) {
+      const nb = notebooks.find((n) => n.id === id);
+      if (nb) await handleDeleteNotebookPermanently(nb);
+      const fld = folders.find((f) => f.id === id);
+      if (fld) await handleDeleteFolderPermanently(fld);
+    }
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+    await onRefreshData?.();
   };
 
   return (
@@ -705,10 +794,22 @@ export function LibraryView({
                 Favoritos
               </h2>
             ) : (
-              <h2 className="text-xl font-bold tracking-tight text-primary flex items-center gap-2">
-                <Trash2 className="w-5 h-5 text-[#FF3B30]" />
-                Lixeira
-              </h2>
+              <div className="flex items-center gap-3">
+                <h2 className="text-xl font-bold tracking-tight text-primary flex items-center gap-2">
+                  <Trash2 className="w-5 h-5 text-[#FF3B30]" />
+                  Lixeira
+                </h2>
+                {(visibleNotebooks.length > 0 || visibleFolders.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={handleEmptyTrash}
+                    className="px-3 py-1.5 rounded-full bg-[#FF3B30] hover:bg-red-600 text-white text-xs font-semibold flex items-center gap-1.5 shadow-sm transition-colors"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Esvaziar Lixeira
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -771,7 +872,7 @@ export function LibraryView({
               }`}
             >
               <CheckSquare className="w-3.5 h-3.5" />
-              {selectionMode ? 'Concluir' : 'Selecionar'}
+              {selectionMode ? 'Cancelar Seleção' : 'Selecionar'}
             </button>
           </div>
         </header>
@@ -780,13 +881,24 @@ export function LibraryView({
         {selectionMode && selectedIds.size > 0 && (
           <div className="px-6 py-2.5 bg-accent text-white flex items-center justify-between text-xs font-medium">
             <span>{selectedIds.size} item(ns) selecionado(s)</span>
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2.5">
+              {navSection !== 'trash' && (
+                <button
+                  type="button"
+                  onClick={handleBulkTrash}
+                  className="px-3 py-1.5 rounded-full bg-white/20 hover:bg-white/30 font-semibold flex items-center gap-1"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  Mover para Lixeira
+                </button>
+              )}
               <button
-                onClick={handleBulkTrash}
-                className="px-3 py-1 rounded-full bg-white/20 hover:bg-white/30 font-semibold flex items-center gap-1"
+                type="button"
+                onClick={handleBulkDeletePermanently}
+                className="px-3 py-1.5 rounded-full bg-[#FF3B30] hover:bg-red-600 text-white font-semibold flex items-center gap-1 shadow-sm"
               >
                 <Trash2 className="w-3.5 h-3.5" />
-                {navSection === 'trash' ? 'Excluir Selecionados' : 'Mover para Lixeira'}
+                Excluir Definitivamente
               </button>
             </div>
           </div>
@@ -821,7 +933,10 @@ export function LibraryView({
                         className="fixed inset-0 z-30"
                         onClick={() => setPlusMenuOpen(false)}
                       />
-                      <div className="absolute top-1/2 left-4 z-40 w-56 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] py-2 text-xs animate-in fade-in zoom-in-95 duration-100">
+                      <div
+                        style={{ backgroundColor: 'var(--bg-surface)' }}
+                        className="absolute top-1/2 left-4 z-40 w-56 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] py-2 text-xs"
+                      >
                         <button
                           onClick={() => {
                             setPlusMenuOpen(false);
@@ -898,6 +1013,7 @@ export function LibraryView({
                     })
                   }
                   onTrashOrDelete={handleTrashOrDeleteFolder}
+                  onDeletePermanently={handleDeleteFolderPermanently}
                   onRestore={handleRestoreFolder}
                 />
               ))}
@@ -934,6 +1050,7 @@ export function LibraryView({
                   }
                   onDuplicate={handleDuplicateNotebook}
                   onTrashOrDelete={handleTrashOrDeleteNotebook}
+                  onDeletePermanently={handleDeleteNotebookPermanently}
                   onRestore={handleRestoreNotebook}
                 />
               ))}
@@ -968,6 +1085,7 @@ export function LibraryView({
                     })
                   }
                   onTrashOrDelete={handleTrashOrDeleteFolder}
+                  onDeletePermanently={handleDeleteFolderPermanently}
                   onRestore={handleRestoreFolder}
                 />
               ))}
@@ -1002,6 +1120,7 @@ export function LibraryView({
                   }
                   onDuplicate={handleDuplicateNotebook}
                   onTrashOrDelete={handleTrashOrDeleteNotebook}
+                  onDeletePermanently={handleDeleteNotebookPermanently}
                   onRestore={handleRestoreNotebook}
                 />
               ))}

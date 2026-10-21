@@ -36,6 +36,7 @@ import {
   RotateCcw,
   FileDown,
   Image as ImageIcon,
+  Trash2,
 } from 'lucide-react';
 
 interface DocumentWorkspaceProps {
@@ -48,6 +49,9 @@ interface DocumentWorkspaceProps {
   onSelectTab: (notebook: NotebookRecord) => void;
   onCloseTab: (notebookId: string) => void;
   onBackToLibrary: () => void;
+  onDeleteNotebook?: (notebook: NotebookRecord) => Promise<void> | void;
+  onRefreshData?: () => Promise<void> | void;
+  onShowToast?: (msg: string) => void;
 }
 
 export function DocumentWorkspace({
@@ -60,6 +64,9 @@ export function DocumentWorkspace({
   onSelectTab,
   onCloseTab,
   onBackToLibrary,
+  onDeleteNotebook,
+  onRefreshData,
+  onShowToast,
 }: DocumentWorkspaceProps) {
   // Cache otimista em memória para atualização instantânea sem esperar o round-trip do IndexedDB
   const [optimisticPagesMap, setOptimisticPagesMap] = useState<
@@ -388,7 +395,10 @@ export function DocumentWorkspace({
       // Desloca numeração das páginas seguintes
       for (const pg of sortedPages) {
         if (pg.pageNumber >= newPageNumber) {
-          await db.pages.update(pg.id, { pageNumber: pg.pageNumber + 1 });
+          await db.pages.update(pg.id, {
+            pageNumber: pg.pageNumber + 1,
+            updatedAt: now,
+          });
         }
       }
 
@@ -414,6 +424,8 @@ export function DocumentWorkspace({
       });
     });
 
+    setOptimisticPagesMap({});
+    await onRefreshData?.();
     setCurrentPageIndex(newPageNumber);
   };
 
@@ -424,7 +436,10 @@ export function DocumentWorkspace({
     await db.transaction('rw', db.pages, async () => {
       for (const pg of sortedPages) {
         if (pg.pageNumber >= targetNum) {
-          await db.pages.update(pg.id, { pageNumber: pg.pageNumber + 1 });
+          await db.pages.update(pg.id, {
+            pageNumber: pg.pageNumber + 1,
+            updatedAt: now,
+          });
         }
       }
       await db.pages.add({
@@ -434,22 +449,36 @@ export function DocumentWorkspace({
         updatedAt: now,
       });
     });
+    setOptimisticPagesMap({});
+    await onRefreshData?.();
     setCurrentPageIndex(targetNum);
   };
 
   const handleRotatePage = async (page: PageRecord) => {
     const nextRot = (((page.rotation || 0) + 90) % 360) as 0 | 90 | 180 | 270;
+    const now = Date.now();
     await db.pages.update(page.id, {
       rotation: nextRot,
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
+    setOptimisticPagesMap((prev) => ({
+      ...prev,
+      [page.id]: { ...page, rotation: nextRot, updatedAt: now },
+    }));
+    await onRefreshData?.();
   };
 
   const handleTogglePageFavorite = async (page: PageRecord) => {
+    const now = Date.now();
     await db.pages.update(page.id, {
       isFavorite: !page.isFavorite,
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
+    setOptimisticPagesMap((prev) => ({
+      ...prev,
+      [page.id]: { ...page, isFavorite: !page.isFavorite, updatedAt: now },
+    }));
+    await onRefreshData?.();
   };
 
   const handleMovePageOrder = async (
@@ -459,25 +488,57 @@ export function DocumentWorkspace({
     const targetIndex = direction === 'left' ? pageIndex - 1 : pageIndex + 1;
     if (targetIndex < 0 || targetIndex >= sortedPages.length) return;
 
+    const now = Date.now();
     const pageA = sortedPages[pageIndex];
     const pageB = sortedPages[targetIndex];
     await db.transaction('rw', db.pages, async () => {
-      await db.pages.update(pageA.id, { pageNumber: targetIndex });
-      await db.pages.update(pageB.id, { pageNumber: pageIndex });
+      await db.pages.update(pageA.id, {
+        pageNumber: targetIndex,
+        updatedAt: now,
+      });
+      await db.pages.update(pageB.id, {
+        pageNumber: pageIndex,
+        updatedAt: now,
+      });
     });
+    setOptimisticPagesMap({});
+    await onRefreshData?.();
     setCurrentPageIndex(targetIndex);
   };
 
   const handleDeletePage = async (page: PageRecord) => {
-    if (sortedPages.length <= 1) return;
+    const now = Date.now();
+    if (sortedPages.length <= 1) {
+      // Se for a única página do caderno, limpa todo o conteúdo da folha
+      const cleared: PageRecord = {
+        ...page,
+        strokes: [],
+        shapes: [],
+        textBoxes: [],
+        images: [],
+        updatedAt: now,
+      };
+      await db.pages.put(cleared);
+      setOptimisticPagesMap({ [page.id]: cleared });
+      await onRefreshData?.();
+      onShowToast?.('Conteúdo da página apagado!');
+      return;
+    }
+
     await db.transaction('rw', db.pages, async () => {
       await db.pages.delete(page.id);
       const remaining = sortedPages.filter((p) => p.id !== page.id);
       for (let i = 0; i < remaining.length; i++) {
-        await db.pages.update(remaining[i].id, { pageNumber: i });
+        await db.pages.update(remaining[i].id, {
+          pageNumber: i,
+          updatedAt: now,
+        });
       }
     });
+    setOptimisticPagesMap({});
+    await onRefreshData?.();
     setCurrentPageIndex((idx) => Math.max(0, idx - 1));
+    onShowToast?.('Página excluída!');
   };
 
   // Elemento recém-inserido para seleção/foco imediato no PageCanvas
@@ -716,9 +777,21 @@ export function DocumentWorkspace({
           </button>
 
           <button
+            onClick={() => handleDeletePage(currentPage)}
+            className="p-2 rounded-xl hover:bg-red-500/15 text-[#FF3B30] transition-colors"
+            title={
+              sortedPages.length > 1
+                ? 'Excluir Página Atual'
+                : 'Limpar Página Atual'
+            }
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+
+          <button
             onClick={() => setExportMenuOpen((prev) => !prev)}
             className="p-2 rounded-xl hover:bg-dock text-accent transition-colors"
-            title="Exportar PDF ou Imagem"
+            title="Exportar ou Excluir Caderno"
           >
             <Share className="w-4 h-4" />
           </button>
@@ -735,14 +808,17 @@ export function DocumentWorkspace({
             )}
           </button>
 
-          {/* Menu Popover de Exportação */}
+          {/* Menu Popover de Exportação & Exclusão */}
           {exportMenuOpen && (
             <>
               <div
                 className="fixed inset-0 z-40"
                 onClick={() => setExportMenuOpen(false)}
               />
-              <div className="absolute top-11 right-0 z-50 w-60 rounded-2xl bg-surface/95 backdrop-blur-xl shadow-2xl border border-[var(--border-subtle)] py-2 text-xs">
+              <div
+                style={{ backgroundColor: 'var(--bg-surface)' }}
+                className="absolute top-11 right-0 z-50 w-64 rounded-2xl bg-surface shadow-2xl border border-[var(--border-subtle)] py-2 text-xs"
+              >
                 <div className="px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-secondary">
                   Exportar & Compartilhar
                 </div>
@@ -764,6 +840,33 @@ export function DocumentWorkspace({
                   <ImageIcon className="w-4 h-4 text-emerald-500" />
                   Exportar Página Atual (PNG)
                 </button>
+                <div className="my-1.5 border-t border-[var(--border-subtle)]" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setExportMenuOpen(false);
+                    handleDeletePage(currentPage);
+                  }}
+                  className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-red-500/10 text-[#FF3B30] font-semibold"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  {sortedPages.length > 1
+                    ? 'Excluir Página Atual'
+                    : 'Limpar Tudo da Página'}
+                </button>
+                {onDeleteNotebook && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExportMenuOpen(false);
+                      onDeleteNotebook(activeNotebook);
+                    }}
+                    className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-red-500/15 text-[#FF3B30] font-bold"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Apagar Este Caderno
+                  </button>
+                )}
               </div>
             </>
           )}

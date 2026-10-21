@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, ensureSeedData } from '@/lib/db';
-import { NotebookRecord } from '@/types/note';
+import { FolderRecord, NotebookRecord, PageRecord } from '@/types/note';
 import { LibraryView } from '@/components/library/LibraryView';
 import { DocumentWorkspace } from '@/components/editor/DocumentWorkspace';
 import { SearchModal } from '@/components/common/SearchModal';
@@ -39,13 +39,34 @@ export default function HomePage() {
   >('idle');
   const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3400);
-  };
+  }, []);
+
+  const [manualFolders, setManualFolders] = useState<FolderRecord[] | null>(
+    null
+  );
+  const [manualNotebooks, setManualNotebooks] = useState<
+    NotebookRecord[] | null
+  >(null);
+  const [manualPages, setManualPages] = useState<PageRecord[] | null>(null);
+
+  const refreshData = useCallback(async () => {
+    const [f, n, p] = await Promise.all([
+      db.folders.toArray(),
+      db.notebooks.toArray(),
+      db.pages.toArray(),
+    ]);
+    setManualFolders(f);
+    setManualNotebooks(n);
+    setManualPages(p);
+  }, []);
 
   useEffect(() => {
-    ensureSeedData();
+    ensureSeedData().then(() => {
+      refreshData();
+    });
     const savedUser = getSavedGoogleUser();
     if (savedUser?.email) {
       setDriveUserEmail(savedUser.email);
@@ -57,7 +78,7 @@ export default function HomePage() {
     ) {
       navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
-  }, []);
+  }, [refreshData]);
 
   useEffect(() => {
     if (darkMode) {
@@ -79,13 +100,29 @@ export default function HomePage() {
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const folders = useLiveQuery(() => db.folders.toArray(), [], []);
-  const notebooks = useLiveQuery(() => db.notebooks.toArray(), [], []);
-  const pages = useLiveQuery(() => db.pages.toArray(), [], []);
+  const liveFolders = useLiveQuery(() => db.folders.toArray(), [], []);
+  const liveNotebooks = useLiveQuery(() => db.notebooks.toArray(), [], []);
+  const livePages = useLiveQuery(() => db.pages.toArray(), [], []);
+
+  useEffect(() => {
+    setManualFolders(null);
+  }, [liveFolders]);
+
+  useEffect(() => {
+    setManualNotebooks(null);
+  }, [liveNotebooks]);
+
+  useEffect(() => {
+    setManualPages(null);
+  }, [livePages]);
+
+  const folders = manualFolders ?? liveFolders;
+  const notebooks = manualNotebooks ?? liveNotebooks;
+  const pages = manualPages ?? livePages;
 
   // Auto-Sync com debounce de 15 segundos sempre que cadernos/páginas mudam e a sessão do Google Drive está ativa
   useEffect(() => {
-    if (!autoSyncEnabled || !hasValidAccessToken() || notebooks.length === 0) {
+    if (!autoSyncEnabled || !hasValidAccessToken()) {
       return;
     }
     if (autoSyncTimerRef.current) {
@@ -129,10 +166,22 @@ export default function HomePage() {
     });
   };
 
+  const handleTrashActiveNotebook = async (nb: NotebookRecord) => {
+    await db.notebooks.update(nb.id, {
+      isTrashed: true,
+      updatedAt: Date.now(),
+    });
+    await refreshData();
+    handleCloseTab(nb.id);
+    setActiveNotebookId(null);
+    showToast(`Caderno "${nb.title}" movido para a Lixeira!`);
+  };
+
   const handleImportPdfFile = async (file: File, folderId: string | null) => {
     showToast('Importando páginas do PDF...');
     try {
       const createdNb = await importPdfAsNotebook(file, folderId);
+      await refreshData();
       showToast(`PDF "${createdNb.title}" importado com sucesso!`);
       handleOpenNotebook(createdNb, 0);
     } catch {
@@ -148,13 +197,16 @@ export default function HomePage() {
   const handleImportBackup = async (file: File) => {
     try {
       const count = await importBackupFromFile(file);
+      await refreshData();
       showToast(`Backup restaurado (${count} cadernos)!`);
     } catch {
       showToast('Erro ao ler arquivo de backup.');
     }
   };
 
-  const activeNotebook = notebooks.find((n) => n.id === activeNotebookId);
+  const activeNotebook = notebooks.find(
+    (n) => n.id === activeNotebookId && !n.isTrashed
+  );
   const openTabs = openTabIds
     .map((id) => notebooks.find((n) => n.id === id))
     .filter((n): n is NotebookRecord => Boolean(n && !n.isTrashed));
@@ -178,7 +230,13 @@ export default function HomePage() {
             setRequestedPageIndex(nb.lastOpenedPageIndex || 0);
           }}
           onCloseTab={handleCloseTab}
-          onBackToLibrary={() => setActiveNotebookId(null)}
+          onBackToLibrary={() => {
+            refreshData();
+            setActiveNotebookId(null);
+          }}
+          onDeleteNotebook={handleTrashActiveNotebook}
+          onRefreshData={refreshData}
+          onShowToast={showToast}
         />
       ) : (
         <LibraryView
@@ -196,6 +254,8 @@ export default function HomePage() {
           onOpenDriveModal={() => setDriveModalOpen(true)}
           driveUserEmail={driveUserEmail}
           driveSyncStatus={driveSyncStatus}
+          onRefreshData={refreshData}
+          onShowToast={showToast}
         />
       )}
 
@@ -225,6 +285,7 @@ export default function HomePage() {
           setDriveUserEmail(getSavedGoogleUser()?.email || null);
         }}
         onSyncCompleted={(msg) => {
+          refreshData();
           setDriveUserEmail(getSavedGoogleUser()?.email || null);
           setDriveSyncStatus('synced');
           showToast(msg);

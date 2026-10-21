@@ -298,15 +298,17 @@ export function PageThumbnailsModal({
                         >
                           <Copy className="w-3.5 h-3.5" />
                         </button>
-                        {pages.length > 1 && (
-                          <button
-                            onClick={() => onDeletePage(pg)}
-                            className="p-1 rounded hover:bg-red-500/10 text-[#FF3B30]"
-                            title="Excluir Página"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        )}
+                        <button
+                          onClick={() => onDeletePage(pg)}
+                          className="p-1 rounded hover:bg-red-500/10 text-[#FF3B30]"
+                          title={
+                            pages.length > 1
+                              ? 'Excluir Página'
+                              : 'Limpar Conteúdo da Página'
+                          }
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
                       </div>
                     </div>
                   </div>
