@@ -176,7 +176,7 @@ export async function ensureSeedData(): Promise<void> {
       orientation: 'portrait',
       rotation: 0,
       isFavorite: true,
-      outlineTitle: 'Introdução ao InkPad Studio',
+      outlineTitle: 'Introdução — Anotações da Vanessa',
       strokes: [],
       shapes: [
         {

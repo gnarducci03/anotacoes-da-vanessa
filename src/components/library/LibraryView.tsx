@@ -36,6 +36,7 @@ import {
   Upload,
   Keyboard,
   ShieldCheck,
+  Cloud,
 } from 'lucide-react';
 
 interface LibraryViewProps {
@@ -50,6 +51,9 @@ interface LibraryViewProps {
   onImportBackupFile?: (file: File) => Promise<void>;
   onOpenSearchModal?: () => void;
   onOpenShortcutsModal?: () => void;
+  onOpenDriveModal?: () => void;
+  driveUserEmail?: string | null;
+  driveSyncStatus?: 'idle' | 'syncing' | 'synced' | 'error';
 }
 
 type NavSection = 'documents' | 'favorites' | 'trash';
@@ -67,6 +71,9 @@ export function LibraryView({
   onImportBackupFile,
   onOpenSearchModal,
   onOpenShortcutsModal,
+  onOpenDriveModal,
+  driveUserEmail,
+  driveSyncStatus = 'idle',
 }: LibraryViewProps) {
   const [navSection, setNavSection] = useState<NavSection>('documents');
   const [currentFolderId, setCurrentFolderId] = useState<string | null>(null);
@@ -471,18 +478,18 @@ export function LibraryView({
       {/* Sidebar esquerda estilo iPadOS GoodNotes */}
       <aside className="w-64 flex-shrink-0 border-r border-[var(--border-subtle)] bg-elevated backdrop-blur-xl flex flex-col justify-between p-4">
         <div>
-          {/* Marca própria: InkPad Studio */}
+          {/* Marca própria: Anotações da Vanessa */}
           <div className="flex items-center justify-between px-2 py-2 mb-5">
             <div className="flex items-center gap-2.5">
               <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-[#007AFF] to-[#00B4D8] flex items-center justify-center text-white shadow-md">
                 <BookOpen className="w-5 h-5" />
               </div>
               <div>
-                <h1 className="font-bold text-base tracking-tight text-primary leading-none">
-                  InkPad
+                <h1 className="font-bold text-sm tracking-tight text-primary leading-tight">
+                  Anotações da Vanessa
                 </h1>
                 <span className="text-[11px] font-medium text-secondary">
-                  Tablet Notes PWA
+                  Caderno Digital
                 </span>
               </div>
             </div>
@@ -603,8 +610,28 @@ export function LibraryView({
           </div>
         </div>
 
-        {/* Rodapé da Sidebar: Backup & Atalhos */}
+        {/* Rodapé da Sidebar: Google Drive, Backup & Atalhos */}
         <div className="pt-4 border-t border-[var(--border-subtle)] space-y-1">
+          <button
+            onClick={() => onOpenDriveModal?.()}
+            className={`w-full px-3 py-2.5 mb-1.5 rounded-xl border flex items-center justify-between text-xs font-semibold transition-all ${
+              driveUserEmail
+                ? 'bg-accent/10 border-accent/30 text-accent'
+                : 'bg-surface hover:bg-dock border-[var(--border-subtle)] text-primary'
+            }`}
+          >
+            <span className="flex items-center gap-2 truncate">
+              <Cloud className="w-4 h-4 flex-shrink-0 text-accent" />
+              <span className="truncate">
+                {driveSyncStatus === 'syncing'
+                  ? 'Sincronizando Drive...'
+                  : driveUserEmail
+                  ? 'Google Drive Ativo'
+                  : 'Conectar Google Drive'}
+              </span>
+            </span>
+          </button>
+
           <div className="px-3 py-2 mb-1 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between text-[11px]">
             <span className="flex items-center gap-1.5 font-semibold text-emerald-600 dark:text-emerald-400">
               <ShieldCheck className="w-3.5 h-3.5" />

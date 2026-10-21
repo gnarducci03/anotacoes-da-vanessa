@@ -1,7 +1,7 @@
 {
-  "name": "InkPad Studio — Caderno Digital & PDF",
-  "short_name": "InkPad",
-  "description": "Caderno digital para tablet com suporte a caneta stylus, templates de papel e anotação de PDF.",
+  "name": "Anotações da Vanessa",
+  "short_name": "Anotações da Vanessa",
+  "description": "Caderno digital da Vanessa para tablet com suporte a caneta stylus, templates de papel e anotação de PDF.",
   "start_url": "/",
   "display": "standalone",
   "orientation": "any",

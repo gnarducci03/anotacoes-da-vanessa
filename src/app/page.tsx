@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, ensureSeedData } from '@/lib/db';
 import { NotebookRecord } from '@/types/note';
@@ -8,11 +8,17 @@ import { LibraryView } from '@/components/library/LibraryView';
 import { DocumentWorkspace } from '@/components/editor/DocumentWorkspace';
 import { SearchModal } from '@/components/common/SearchModal';
 import { ShortcutsModal } from '@/components/common/ShortcutsModal';
+import { GoogleDriveModal } from '@/components/common/GoogleDriveModal';
 import { importPdfAsNotebook } from '@/lib/pdf-service';
 import {
   exportAllDataAsBackup,
   importBackupFromFile,
 } from '@/lib/backup-service';
+import {
+  getSavedGoogleUser,
+  hasValidAccessToken,
+  syncLocalToGoogleDrive,
+} from '@/lib/google-drive-sync';
 
 export default function HomePage() {
   const [darkMode, setDarkMode] = useState(false);
@@ -22,15 +28,28 @@ export default function HomePage() {
 
   const [searchModalOpen, setSearchModalOpen] = useState(false);
   const [shortcutsModalOpen, setShortcutsModalOpen] = useState(false);
+  const [driveModalOpen, setDriveModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Estado de sincronização automática com o Google Drive da Vanessa
+  const [autoSyncEnabled, setAutoSyncEnabled] = useState(true);
+  const [driveUserEmail, setDriveUserEmail] = useState<string | null>(null);
+  const [driveSyncStatus, setDriveSyncStatus] = useState<
+    'idle' | 'syncing' | 'synced' | 'error'
+  >('idle');
+  const autoSyncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3200);
+    setTimeout(() => setToastMessage(null), 3400);
   };
 
   useEffect(() => {
     ensureSeedData();
+    const savedUser = getSavedGoogleUser();
+    if (savedUser?.email) {
+      setDriveUserEmail(savedUser.email);
+    }
     if (
       typeof window !== 'undefined' &&
       'serviceWorker' in navigator &&
@@ -63,6 +82,31 @@ export default function HomePage() {
   const folders = useLiveQuery(() => db.folders.toArray(), [], []);
   const notebooks = useLiveQuery(() => db.notebooks.toArray(), [], []);
   const pages = useLiveQuery(() => db.pages.toArray(), [], []);
+
+  // Auto-Sync com debounce de 15 segundos sempre que cadernos/páginas mudam e a sessão do Google Drive está ativa
+  useEffect(() => {
+    if (!autoSyncEnabled || !hasValidAccessToken() || notebooks.length === 0) {
+      return;
+    }
+    if (autoSyncTimerRef.current) {
+      clearTimeout(autoSyncTimerRef.current);
+    }
+    autoSyncTimerRef.current = setTimeout(async () => {
+      try {
+        setDriveSyncStatus('syncing');
+        await syncLocalToGoogleDrive();
+        setDriveSyncStatus('synced');
+      } catch {
+        setDriveSyncStatus('error');
+      }
+    }, 15000);
+
+    return () => {
+      if (autoSyncTimerRef.current) {
+        clearTimeout(autoSyncTimerRef.current);
+      }
+    };
+  }, [folders, notebooks, pages, autoSyncEnabled]);
 
   const handleOpenNotebook = (
     notebook: NotebookRecord,
@@ -149,6 +193,9 @@ export default function HomePage() {
           onImportBackupFile={handleImportBackup}
           onOpenSearchModal={() => setSearchModalOpen(true)}
           onOpenShortcutsModal={() => setShortcutsModalOpen(true)}
+          onOpenDriveModal={() => setDriveModalOpen(true)}
+          driveUserEmail={driveUserEmail}
+          driveSyncStatus={driveSyncStatus}
         />
       )}
 
@@ -170,7 +217,23 @@ export default function HomePage() {
         onClose={() => setShortcutsModalOpen(false)}
       />
 
-      {/* Toast Flutuante estilo iPadOS */}
+      {/* Modal da Conta Google & Google Drive Sync */}
+      <GoogleDriveModal
+        isOpen={driveModalOpen}
+        onClose={() => {
+          setDriveModalOpen(false);
+          setDriveUserEmail(getSavedGoogleUser()?.email || null);
+        }}
+        onSyncCompleted={(msg) => {
+          setDriveUserEmail(getSavedGoogleUser()?.email || null);
+          setDriveSyncStatus('synced');
+          showToast(msg);
+        }}
+        autoSyncEnabled={autoSyncEnabled}
+        onToggleAutoSync={setAutoSyncEnabled}
+      />
+
+      {/* Toast Flutuante */}
       {toastMessage && (
         <div className="fixed top-5 left-1/2 -translate-x-1/2 z-50 px-5 py-2.5 rounded-full bg-primary text-surface text-xs font-semibold shadow-2xl animate-in fade-in slide-in-from-top-3">
           {toastMessage}

@@ -2,14 +2,14 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "InkPad Studio — Caderno Digital & PDF",
+  title: "Anotações da Vanessa",
   description:
-    "Web App (PWA) de anotações manuscritas, cadernos e PDF para tablet com suporte a caneta stylus.",
+    "Caderno digital e leitor de PDF da Vanessa para tablet Android com suporte a caneta stylus.",
   manifest: "/manifest.webmanifest",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "InkPad",
+    title: "Anotações da Vanessa",
   },
 };
 
