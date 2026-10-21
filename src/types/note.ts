@@ -155,6 +155,8 @@ export interface PageRecord {
   outlineTitle?: string;
   pdfPageIndex?: number | null;
   pdfTextContent?: string;
+  customWidth?: number;
+  customHeight?: number;
   strokes: StrokeElement[];
   shapes: ShapeElement[];
   textBoxes: TextBoxElement[];

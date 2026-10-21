@@ -141,9 +141,11 @@ export function DocumentWorkspace({
   const [docSearchOpen, setDocSearchOpen] = useState(false);
   const [docSearchQuery, setDocSearchQuery] = useState('');
 
-  // Zoom & Pan da Viewport
+  // Zoom & Pan da Viewport (auto-calculado para a tela do tablet)
   const [zoom, setZoom] = useState(0.85);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [fitMode, setFitMode] = useState<'width' | 'page'>('width');
+  const [fitTrigger, setFitTrigger] = useState(0);
 
   // Histórico Undo / Redo por página (em memória)
   const undoStackRef = useRef<Record<string, PageRecord[]>>({});
@@ -804,6 +806,8 @@ export function DocumentWorkspace({
           setZoom(nextZ);
           setPan(nextP);
         }}
+        fitTrigger={fitTrigger}
+        fitMode={fitMode}
         zoomWindowOpen={zoomWindowOpen}
         onCloseZoomWindow={() => setZoomWindowOpen(false)}
         pdfPageDataUrl={pdfPageDataUrl}
@@ -853,25 +857,27 @@ export function DocumentWorkspace({
         <div className="h-3.5 w-[1px] bg-[var(--border-subtle)] mx-1" />
 
         <button
-          onClick={() => setZoom((z) => Math.max(0.45, +(z - 0.15).toFixed(2)))}
+          onClick={() => setZoom((z) => Math.max(0.25, +(z - 0.15).toFixed(2)))}
           className="px-1.5 font-bold text-secondary hover:text-primary"
+          title="Diminuir Zoom"
         >
           -
         </button>
         <button
           onClick={() => {
-            setZoom(0.85);
-            setPan({ x: 0, y: 0 });
+            setFitMode((m) => (m === 'width' ? 'page' : 'width'));
+            setFitTrigger((t) => t + 1);
           }}
-          className="font-semibold text-accent flex items-center gap-1"
-          title="Resetar Zoom e Centralizar Página"
+          className="font-semibold text-accent flex items-center gap-1 px-1"
+          title="Toque para alternar entre Ajustar à Largura e Ajustar à Página Inteira"
         >
           {Math.round(zoom * 100)}%
           <RotateCcw className="w-3 h-3" />
         </button>
         <button
-          onClick={() => setZoom((z) => Math.min(3.5, +(z + 0.15).toFixed(2)))}
+          onClick={() => setZoom((z) => Math.min(4.0, +(z + 0.15).toFixed(2)))}
           className="px-1.5 font-bold text-secondary hover:text-primary"
+          title="Aumentar Zoom"
         >
           +
         </button>

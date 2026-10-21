@@ -105,8 +105,24 @@ export async function importPdfAsNotebook(
   const pagesToCreate: PageRecord[] = [];
   for (let i = 1; i <= numPages; i++) {
     let extractedText = '';
+    let customWidth = 768;
+    let customHeight = 994;
+    let orientation: 'portrait' | 'landscape' = 'portrait';
+
     try {
       const pg = await pdfDoc.getPage(i);
+      const vp = pg.getViewport({ scale: 1 });
+      if (vp.width > 0 && vp.height > 0) {
+        orientation = vp.width > vp.height ? 'landscape' : 'portrait';
+        // Normaliza a base da página para 768px no menor eixo para manter nitidez e espessura de caneta consistentes
+        if (orientation === 'portrait') {
+          customWidth = 768;
+          customHeight = Math.round((768 * vp.height) / vp.width);
+        } else {
+          customHeight = 768;
+          customWidth = Math.round((768 * vp.width) / vp.height);
+        }
+      }
       const tc = await pg.getTextContent();
       extractedText = tc.items
         .map((item) => ('str' in item ? item.str : ''))
@@ -121,12 +137,14 @@ export async function importPdfAsNotebook(
       pageNumber: i - 1,
       template: 'blank',
       paperColor: 'white',
-      orientation: 'portrait',
+      orientation,
       rotation: 0,
       isFavorite: false,
       outlineTitle: `Página PDF ${i}`,
       pdfPageIndex: i,
       pdfTextContent: extractedText,
+      customWidth,
+      customHeight,
       strokes: [],
       shapes: [],
       textBoxes: [],
@@ -166,10 +184,9 @@ export async function renderFullPageToDataUrl(
   page: PageRecord,
   pdfBuffer?: ArrayBuffer | null
 ): Promise<{ dataUrl: string; width: number; height: number }> {
-  const { width, height } = getPageDimensions(
-    notebook.pageSize,
-    page.orientation
-  );
+  const baseDims = getPageDimensions(notebook.pageSize, page.orientation);
+  const width = page.customWidth || baseDims.width;
+  const height = page.customHeight || baseDims.height;
   const scale = 2; // Alta resolução para exportação
   const canvas = document.createElement('canvas');
   canvas.width = width * scale;

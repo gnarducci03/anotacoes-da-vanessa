@@ -74,6 +74,8 @@ interface PageCanvasProps {
   zoom: number;
   pan: { x: number; y: number };
   onChangeZoomPan: (nextZoom: number, nextPan: { x: number; y: number }) => void;
+  fitTrigger?: number;
+  fitMode?: 'width' | 'page';
   zoomWindowOpen: boolean;
   onCloseZoomWindow: () => void;
   pdfPageDataUrl?: string | null;
@@ -115,6 +117,8 @@ export function PageCanvas({
   zoom,
   pan,
   onChangeZoomPan,
+  fitTrigger = 0,
+  fitMode = 'width',
   zoomWindowOpen,
   onCloseZoomWindow,
   pdfPageDataUrl,
@@ -123,10 +127,9 @@ export function PageCanvas({
   onUndo,
   onRedo,
 }: PageCanvasProps) {
-  const { width: pageW, height: pageH } = getPageDimensions(
-    pageSize,
-    page.orientation
-  );
+  const baseDimensions = getPageDimensions(pageSize, page.orientation);
+  const pageW = page.customWidth || baseDimensions.width;
+  const pageH = page.customHeight || baseDimensions.height;
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -172,12 +175,14 @@ export function PageCanvas({
   const laserTrailRef = useRef<LaserTrailPoint[]>([]);
   const laserAnimFrameRef = useRef<number | null>(null);
 
-  // Gestos multi-toque (Pinch to zoom, 2/3 finger tap undo/redo, 1-finger pan)
+  // Gestos multi-toque (Pinch to zoom + 2-finger Pan simultâneo, 2/3 finger tap undo/redo, 1-finger pan)
   const activePointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(
     new Map()
   );
   const pinchInitialDistRef = useRef<number | null>(null);
+  const pinchInitialCenterRef = useRef<{ x: number; y: number } | null>(null);
   const pinchInitialZoomRef = useRef<number>(zoom);
+  const pinchInitialPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const panStartRef = useRef<{
     clientX: number;
     clientY: number;
@@ -186,6 +191,68 @@ export function PageCanvas({
   } | null>(null);
   const multiTouchCountRef = useRef<number>(0);
   const multiTouchStartTimeRef = useRef<number>(0);
+
+  // Calcula e aplica automaticamente o Zoom Proporcional à tela do Tablet (Fit-to-Width ou Fit-to-Page)
+  const applyResponsiveFit = useCallback(
+    (mode: 'width' | 'page' = fitMode) => {
+      const vp = viewportRef.current;
+      if (!vp) return;
+      const rect = vp.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const isRotated90 = page.rotation === 90 || page.rotation === 270;
+      const effectiveW = isRotated90 ? pageH : pageW;
+      const effectiveH = isRotated90 ? pageW : pageH;
+
+      const padX = Math.min(36, rect.width * 0.04);
+      const padY = 48;
+
+      const scaleX = (rect.width - padX * 2) / effectiveW;
+      const scaleY = (rect.height - padY * 2) / effectiveH;
+
+      const targetZoom =
+        mode === 'page'
+          ? Math.min(scaleX, scaleY)
+          : rect.width < 1024
+          ? scaleX
+          : Math.min(scaleX, scaleY * 1.15);
+
+      const clampedZoom = Math.min(2.5, Math.max(0.25, +targetZoom.toFixed(3)));
+      const scaledHeight = effectiveH * clampedZoom;
+
+      // Se a página escalada for mais alta que a tela do tablet, alinha pelo topo para leitura imediata
+      const initialPanY =
+        scaledHeight > rect.height - padY
+          ? Math.round((scaledHeight - rect.height) / 2 + 24)
+          : 0;
+
+      onChangeZoomPan(clampedZoom, { x: 0, y: initialPanY });
+    },
+    [fitMode, pageW, pageH, page.rotation, onChangeZoomPan]
+  );
+
+  // Ajusta automaticamente ao abrir página, trocar tamanho de página/PDF ou girar o tablet
+  useEffect(() => {
+    const id = requestAnimationFrame(() => applyResponsiveFit(fitMode));
+    return () => cancelAnimationFrame(id);
+  }, [page.id, pageW, pageH, page.rotation, fitTrigger, fitMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const vp = viewportRef.current;
+    if (!vp || typeof ResizeObserver === 'undefined') return;
+    let prevW = vp.clientWidth;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const newW = Math.round(entry.contentRect.width);
+        if (Math.abs(newW - prevW) > 40) {
+          prevW = newW;
+          applyResponsiveFit(fitMode);
+        }
+      }
+    });
+    ro.observe(vp);
+    return () => ro.disconnect();
+  }, [applyResponsiveFit, fitMode]);
 
   // Janela de Zoom (Zoom Window Target Box na página)
   const [zoomBox, setZoomBox] = useState<{ x: number; y: number }>({
@@ -229,6 +296,32 @@ export function PageCanvas({
     if (pdfPageDataUrl) {
       const img = new window.Image();
       img.onload = () => {
+        if (
+          img.naturalWidth > 0 &&
+          img.naturalHeight > 0 &&
+          (!page.customWidth || !page.customHeight)
+        ) {
+          const isLandscape = img.naturalWidth > img.naturalHeight;
+          const nextW = isLandscape
+            ? Math.round((768 * img.naturalWidth) / img.naturalHeight)
+            : 768;
+          const nextH = isLandscape
+            ? 768
+            : Math.round((768 * img.naturalHeight) / img.naturalWidth);
+
+          if (Math.abs(nextW - pageW) > 5 || Math.abs(nextH - pageH) > 5) {
+            onCommitPageUpdate(
+              (prev) => ({
+                ...prev,
+                orientation: isLandscape ? 'landscape' : 'portrait',
+                customWidth: nextW,
+                customHeight: nextH,
+              }),
+              false
+            );
+          }
+        }
+
         const c = bgCanvasRef.current;
         if (!c) return;
         const cCtx = c.getContext('2d');
@@ -242,7 +335,16 @@ export function PageCanvas({
     }
 
     ctx.restore();
-  }, [page.template, page.paperColor, pageW, pageH, pdfPageDataUrl]);
+  }, [
+    page.template,
+    page.paperColor,
+    page.customWidth,
+    page.customHeight,
+    pageW,
+    pageH,
+    pdfPageDataUrl,
+    onCommitPageUpdate,
+  ]);
 
   // 2. Renderiza Camada 2: Traços Finalizados (Marca-Texto embaixo + Formas + Caneta em cima)
   const renderStaticLayer = useCallback(() => {
@@ -543,7 +645,12 @@ export function PageCanvas({
           pts[1].x - pts[0].x,
           pts[1].y - pts[0].y
         );
+        pinchInitialCenterRef.current = {
+          x: (pts[0].x + pts[1].x) / 2,
+          y: (pts[0].y + pts[1].y) / 2,
+        };
         pinchInitialZoomRef.current = zoom;
+        pinchInitialPanRef.current = { x: pan.x, y: pan.y };
         return;
       }
 
@@ -688,13 +795,34 @@ export function PageCanvas({
       });
     }
 
-    // Pinch-to-Zoom com 2 dedos
-    if (activePointersRef.current.size === 2 && pinchInitialDistRef.current) {
+    // Pinch-to-Zoom + Pan livre simultâneo com 2 dedos (em qualquer direção: lados, cima, baixo, diagonal)
+    if (
+      activePointersRef.current.size === 2 &&
+      pinchInitialDistRef.current &&
+      pinchInitialCenterRef.current
+    ) {
       const pts = Array.from(activePointersRef.current.values());
       const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
-      const factor = dist / pinchInitialDistRef.current;
-      const nextZoom = Math.min(3.5, Math.max(0.45, pinchInitialZoomRef.current * factor));
-      onChangeZoomPan(nextZoom, pan);
+      const currentCenter = {
+        x: (pts[0].x + pts[1].x) / 2,
+        y: (pts[0].y + pts[1].y) / 2,
+      };
+      const factor =
+        pinchInitialDistRef.current > 12
+          ? dist / pinchInitialDistRef.current
+          : 1;
+      const nextZoom = Math.min(
+        4.0,
+        Math.max(0.25, pinchInitialZoomRef.current * factor)
+      );
+
+      const deltaX = currentCenter.x - pinchInitialCenterRef.current.x;
+      const deltaY = currentCenter.y - pinchInitialCenterRef.current.y;
+
+      onChangeZoomPan(nextZoom, {
+        x: pinchInitialPanRef.current.x + deltaX,
+        y: pinchInitialPanRef.current.y + deltaY,
+      });
       return;
     }
 
@@ -1012,10 +1140,14 @@ export function PageCanvas({
   ) => {
     activePointersRef.current.delete(e.pointerId);
 
-    // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo)
+    // Verifica gesto rápido de 2 dedos (Undo) ou 3 dedos (Redo) apenas se os dedos não arrastaram a tela
     if (activePointersRef.current.size === 0 && multiTouchCountRef.current >= 2) {
       const elapsed = performance.now() - multiTouchStartTimeRef.current;
-      if (elapsed < 280) {
+      const movedDist = Math.hypot(
+        pan.x - pinchInitialPanRef.current.x,
+        pan.y - pinchInitialPanRef.current.y
+      );
+      if (elapsed < 260 && movedDist < 14) {
         if (multiTouchCountRef.current === 2) {
           onUndo();
         } else if (multiTouchCountRef.current >= 3) {
@@ -1024,6 +1156,7 @@ export function PageCanvas({
       }
       multiTouchCountRef.current = 0;
       pinchInitialDistRef.current = null;
+      pinchInitialCenterRef.current = null;
     }
 
     panStartRef.current = null;
