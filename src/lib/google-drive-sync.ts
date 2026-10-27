@@ -1,4 +1,5 @@
 import { db } from './db';
+import { buildNotebookPdfBytes } from './pdf-service';
 import { FolderRecord, NotebookRecord, PageRecord } from '@/types/note';
 
 export interface GoogleUserProfile {
@@ -15,7 +16,7 @@ export interface DriveSyncState {
   errorMessage?: string | null;
 }
 
-const DRIVE_FOLDER_NAME = 'Anotações da Vanessa (Backup)';
+export const DRIVE_FOLDER_NAME = 'anotações estudos';
 const DRIVE_METADATA_FILE = 'vanessa-notes-db.json';
 const STORAGE_KEY_CLIENT_ID = 'vanessa_google_client_id';
 const STORAGE_KEY_LAST_SYNC = 'vanessa_last_drive_sync';
@@ -267,7 +268,7 @@ async function driveFetch(
 }
 
 /**
- * Localiza ou cria a pasta "Anotações da Vanessa (Backup)" no Google Drive
+ * Localiza ou cria automaticamente no primeiro upload a pasta "anotações estudos" no Google Drive
  */
 async function ensureDriveBackupFolderId(): Promise<string> {
   const q = encodeURIComponent(
@@ -281,7 +282,7 @@ async function ensureDriveBackupFolderId(): Promise<string> {
     return data.files[0].id;
   }
 
-  // Cria a pasta se não existir
+  // Cria a pasta "anotações estudos" automaticamente no primeiro upload se ainda não existir
   const createRes = await driveFetch(
     'https://www.googleapis.com/drive/v3/files',
     {
@@ -372,10 +373,46 @@ async function uploadOrUpdateDriveFile(params: {
   return json.id;
 }
 
+function getSafeNotebookPdfFileName(title: string): string {
+  const base = (title || 'Caderno').trim().replace(/[\\/:*?"<>|]/g, '-');
+  return base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`;
+}
+
 /**
- * Sincroniza (Push) todas as pastas, cadernos, páginas e PDFs locais para o Google Drive da Vanessa
+ * Salva/atualiza um único caderno diretamente como PDF legível dentro da pasta "anotações estudos"
+ * e também atualiza o backup completo do app.
  */
-export async function syncLocalToGoogleDrive(): Promise<number> {
+export async function saveNotebookPdfToGoogleDrive(
+  notebook: NotebookRecord,
+  pages: PageRecord[]
+): Promise<string> {
+  if (!hasValidAccessToken()) {
+    await signInWithGoogleDrive(getSavedGoogleUser() ? '' : 'select_account');
+  }
+  const folderId = await ensureDriveBackupFolderId();
+  const existingFiles = await listFilesInDriveFolder(folderId);
+  const pdfFileName = getSafeNotebookPdfFileName(notebook.title);
+  const existingPdf = existingFiles.find((f) => f.name === pdfFileName);
+  const pdfBytes = await buildNotebookPdfBytes(notebook, pages);
+
+  await uploadOrUpdateDriveFile({
+    folderId,
+    existingFileId: existingPdf?.id,
+    name: pdfFileName,
+    mimeType: 'application/pdf',
+    bodyBytes: pdfBytes,
+  });
+
+  await syncLocalToGoogleDrive({ skipNotebookPdfId: notebook.id });
+  return pdfFileName;
+}
+
+/**
+ * Sincroniza (Push) todas as pastas, cadernos, páginas e PDFs locais para a pasta "anotações estudos" no Google Drive
+ */
+export async function syncLocalToGoogleDrive(options?: {
+  skipNotebookPdfId?: string;
+}): Promise<number> {
   const folderId = await ensureDriveBackupFolderId();
   const existingFiles = await listFilesInDriveFolder(folderId);
 
@@ -386,7 +423,7 @@ export async function syncLocalToGoogleDrive(): Promise<number> {
     db.assets.toArray(),
   ]);
 
-  // 1. Envia cada PDF binário apenas se ainda não existir na pasta do Google Drive
+  // 1. Envia cada PDF binário original apenas se ainda não existir na pasta "anotações estudos"
   const assetManifest: {
     id: string;
     name: string;
@@ -417,7 +454,29 @@ export async function syncLocalToGoogleDrive(): Promise<number> {
     });
   }
 
-  // 2. Salva o JSON consolidado de pastas, cadernos, páginas e índice de PDFs
+  // 2. Gera e salva cada caderno ativo como arquivo PDF legível (<Título>.pdf) dentro de "anotações estudos"
+  const activeNotebooks = notebooks.filter((n) => !n.isTrashed);
+  for (const nb of activeNotebooks) {
+    if (options?.skipNotebookPdfId === nb.id) continue;
+    const nbPages = pages.filter((p) => p.notebookId === nb.id);
+    if (nbPages.length === 0) continue;
+    try {
+      const pdfFileName = getSafeNotebookPdfFileName(nb.title);
+      const existingPdf = existingFiles.find((f) => f.name === pdfFileName);
+      const pdfBytes = await buildNotebookPdfBytes(nb, nbPages);
+      await uploadOrUpdateDriveFile({
+        folderId,
+        existingFileId: existingPdf?.id,
+        name: pdfFileName,
+        mimeType: 'application/pdf',
+        bodyBytes: pdfBytes,
+      });
+    } catch {
+      // Continua sincronizando os demais arquivos mesmo se um PDF específico falhar
+    }
+  }
+
+  // 3. Salva o JSON consolidado de pastas, cadernos, páginas e índice de PDFs dentro de "anotações estudos"
   const existingMetaFile = existingFiles.find(
     (f) => f.name === DRIVE_METADATA_FILE
   );
@@ -448,7 +507,7 @@ export async function syncLocalToGoogleDrive(): Promise<number> {
 }
 
 /**
- * Baixa e restaura (Pull/Merge) todas as notas e PDFs salvos no Google Drive da Vanessa para o tablet
+ * Baixa e restaura (Pull/Merge) todas as notas e PDFs salvos na pasta "anotações estudos" do Google Drive para o tablet
  */
 export async function restoreFromGoogleDrive(): Promise<{
   notebooksCount: number;
@@ -460,7 +519,7 @@ export async function restoreFromGoogleDrive(): Promise<{
 
   if (!metaFile) {
     throw new Error(
-      'Nenhum backup encontrado na pasta "Anotações da Vanessa (Backup)" do Google Drive.'
+      `Nenhum backup encontrado na pasta "${DRIVE_FOLDER_NAME}" do Google Drive.`
     );
   }
 

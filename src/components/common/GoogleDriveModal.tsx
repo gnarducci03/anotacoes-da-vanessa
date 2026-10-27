@@ -106,7 +106,7 @@ export function GoogleDriveModal({
       const ts = await syncLocalToGoogleDrive();
       setLastSyncedAt(ts);
       onSyncCompleted(
-        `Conectado como ${profile.name}! Backup salvo no Google Drive.`
+        `Conectado como ${profile.name}! Tudo salvo na pasta "anotações estudos" do Google Drive.`
       );
     } catch (err) {
       setShowConfig(true);
@@ -133,7 +133,9 @@ export function GoogleDriveModal({
       }
       const ts = await syncLocalToGoogleDrive();
       setLastSyncedAt(ts);
-      onSyncCompleted('Todas as notas e PDFs foram salvos no Google Drive!');
+      onSyncCompleted(
+        'Todas as notas e PDFs foram salvos na pasta "anotações estudos" do Google Drive!'
+      );
     } catch (err) {
       // Se o token de 1h tiver expirado, pede renovação rápida
       try {
@@ -141,7 +143,9 @@ export function GoogleDriveModal({
         setUser(profile);
         const ts = await syncLocalToGoogleDrive();
         setLastSyncedAt(ts);
-        onSyncCompleted('Notas e PDFs sincronizados com o Google Drive!');
+        onSyncCompleted(
+          'Notas e PDFs salvos na pasta "anotações estudos" do Google Drive!'
+        );
       } catch {
         setShowConfig(true);
         setErrorMsg(
@@ -171,7 +175,7 @@ export function GoogleDriveModal({
       const res = await restoreFromGoogleDrive();
       setLastSyncedAt(Date.now());
       onSyncCompleted(
-        `Restaurados ${res.notebooksCount} cadernos (${res.pagesCount} páginas) do Google Drive!`
+        `Restaurados ${res.notebooksCount} cadernos (${res.pagesCount} páginas) da pasta "anotações estudos"!`
       );
     } catch (err) {
       setShowConfig(true);
@@ -204,7 +208,7 @@ export function GoogleDriveModal({
                 Conta Google & Nuvem da Vanessa
               </h3>
               <p className="text-[11px] text-secondary">
-                Salva na pasta &ldquo;Anotações da Vanessa (Backup)&rdquo; no Google Drive
+                Salva na pasta &ldquo;anotações estudos&rdquo; no Google Drive
               </p>
             </div>
           </div>

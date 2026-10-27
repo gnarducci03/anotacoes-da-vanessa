@@ -333,25 +333,51 @@ export async function renderFullPageToDataUrl(
 }
 
 /**
- * Exporta todas as páginas de um Caderno (com PDF e anotações) em um arquivo PDF via pdf-lib
+ * Gera os bytes de um arquivo PDF completo de um Caderno (com PDF de fundo e todas as anotações)
  */
-export async function exportNotebookToPdf(
+export async function buildNotebookPdfBytes(
   notebook: NotebookRecord,
   pages: PageRecord[]
-): Promise<void> {
+): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   let pdfBuffer: ArrayBuffer | null = null;
+  let sourcePdfDoc: PDFDocument | null = null;
 
   if (notebook.pdfAssetId) {
     const asset = await db.assets.get(notebook.pdfAssetId);
     if (asset) {
       pdfBuffer = asset.data;
+      try {
+        sourcePdfDoc = await PDFDocument.load(pdfBuffer.slice(0));
+      } catch {
+        sourcePdfDoc = null;
+      }
     }
   }
 
   const sortedPages = [...pages].sort((a, b) => a.pageNumber - b.pageNumber);
 
   for (const pg of sortedPages) {
+    const hasAnnotations =
+      pg.strokes.length > 0 ||
+      pg.shapes.length > 0 ||
+      pg.textBoxes.length > 0 ||
+      pg.images.length > 0;
+
+    if (
+      !hasAnnotations &&
+      sourcePdfDoc &&
+      pg.pdfPageIndex &&
+      pg.pdfPageIndex >= 1 &&
+      pg.pdfPageIndex <= sourcePdfDoc.getPageCount()
+    ) {
+      const [copiedPage] = await pdfDoc.copyPages(sourcePdfDoc, [
+        pg.pdfPageIndex - 1,
+      ]);
+      pdfDoc.addPage(copiedPage);
+      continue;
+    }
+
     const { dataUrl, width, height } = await renderFullPageToDataUrl(
       notebook,
       pg,
@@ -367,7 +393,17 @@ export async function exportNotebookToPdf(
     });
   }
 
-  const pdfBytes = await pdfDoc.save();
+  return pdfDoc.save();
+}
+
+/**
+ * Exporta todas as páginas de um Caderno (com PDF e anotações) em um arquivo PDF via pdf-lib
+ */
+export async function exportNotebookToPdf(
+  notebook: NotebookRecord,
+  pages: PageRecord[]
+): Promise<void> {
+  const pdfBytes = await buildNotebookPdfBytes(notebook, pages);
   const blob = new Blob([pdfBytes as unknown as BlobPart], {
     type: 'application/pdf',
   });

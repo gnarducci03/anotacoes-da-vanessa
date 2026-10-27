@@ -21,6 +21,7 @@ import {
   renderFullPageToDataUrl,
   renderPdfPageFromBuffer,
 } from '@/lib/pdf-service';
+import { saveNotebookPdfToGoogleDrive } from '@/lib/google-drive-sync';
 import {
   ChevronLeft,
   ChevronRight,
@@ -37,6 +38,7 @@ import {
   FileDown,
   Image as ImageIcon,
   Trash2,
+  Cloud,
 } from 'lucide-react';
 
 interface DocumentWorkspaceProps {
@@ -719,6 +721,29 @@ export function DocumentWorkspace({
     }
   };
 
+  // Salvar Caderno Diretamente na pasta "anotações estudos" do Google Drive
+  const handleSaveToGoogleDrive = async () => {
+    setIsExporting(true);
+    try {
+      const savedFileName = await saveNotebookPdfToGoogleDrive(
+        activeNotebook,
+        sortedPages
+      );
+      onShowToast?.(
+        `Salvo como "${savedFileName}" na pasta "anotações estudos" do Google Drive!`
+      );
+    } catch (err) {
+      onShowToast?.(
+        err instanceof Error
+          ? err.message
+          : 'Erro ao salvar no Google Drive.'
+      );
+    } finally {
+      setIsExporting(false);
+      setExportMenuOpen(false);
+    }
+  };
+
   if (!currentPage) return null;
 
   return (
@@ -878,6 +903,16 @@ export function DocumentWorkspace({
                 <div className="px-3.5 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-secondary">
                   Exportar & Compartilhar
                 </div>
+                <button
+                  disabled={isExporting}
+                  onClick={handleSaveToGoogleDrive}
+                  className="w-full px-3.5 py-2.5 flex items-center gap-2.5 hover:bg-dock text-primary font-semibold disabled:opacity-50"
+                >
+                  <Cloud className="w-4 h-4 text-accent" />
+                  {isExporting
+                    ? 'Salvando no Drive...'
+                    : 'Salvar no Drive (anotações estudos)'}
+                </button>
                 <button
                   disabled={isExporting}
                   onClick={handleExportFullPdf}
