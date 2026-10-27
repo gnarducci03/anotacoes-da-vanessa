@@ -8,9 +8,11 @@ import {
   getSavedGoogleUser,
   GoogleUserProfile,
   restoreFromGoogleDrive,
+  sanitizeGoogleClientId,
   setConfiguredGoogleClientId,
   signInWithGoogleDrive,
   syncLocalToGoogleDrive,
+  validateGoogleClientId,
 } from '@/lib/google-drive-sync';
 import {
   Cloud,
@@ -21,6 +23,8 @@ import {
   Settings,
   X,
   AlertCircle,
+  Copy,
+  Check,
 } from 'lucide-react';
 
 interface GoogleDriveModalProps {
@@ -44,35 +48,60 @@ export function GoogleDriveModal({
   const [showConfig, setShowConfig] = useState(false);
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [copiedOrigin, setCopiedOrigin] = useState(false);
+  const [currentOrigin, setCurrentOrigin] = useState('');
 
   useEffect(() => {
     if (!isOpen) return;
-    setUser(getSavedGoogleUser());
+    const savedUser = getSavedGoogleUser();
+    setUser(savedUser);
     setLastSyncedAt(getLastSyncedTimestamp());
     const cid = getConfiguredGoogleClientId();
     setClientIdInput(cid);
-    setShowConfig(!cid);
+    const check = validateGoogleClientId(cid);
+    setShowConfig(!cid || !check.valid || !savedUser);
     setErrorMsg(null);
+    if (typeof window !== 'undefined') {
+      setCurrentOrigin(window.location.origin);
+    }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
+  const clientValidation = validateGoogleClientId(clientIdInput);
+
   const handleSaveClientId = (e: React.FormEvent) => {
     e.preventDefault();
-    setConfiguredGoogleClientId(clientIdInput);
-    setShowConfig(false);
+    const cleaned = sanitizeGoogleClientId(clientIdInput);
+    setClientIdInput(cleaned);
+    setConfiguredGoogleClientId(cleaned);
+    const check = validateGoogleClientId(cleaned);
+    if (!check.valid) {
+      setErrorMsg(check.reason || 'Client ID inválido.');
+      return;
+    }
     setErrorMsg(null);
+  };
+
+  const handleCopyOrigin = () => {
+    if (!currentOrigin) return;
+    navigator.clipboard.writeText(currentOrigin);
+    setCopiedOrigin(true);
+    setTimeout(() => setCopiedOrigin(false), 2000);
   };
 
   const handleConnectGoogle = async () => {
     setBusy(true);
     setErrorMsg(null);
     try {
-      if (clientIdInput.trim()) {
-        setConfiguredGoogleClientId(clientIdInput.trim());
+      const cleaned = sanitizeGoogleClientId(clientIdInput);
+      if (cleaned) {
+        setClientIdInput(cleaned);
+        setConfiguredGoogleClientId(cleaned);
       }
       const profile = await signInWithGoogleDrive('select_account');
       setUser(profile);
+      setShowConfig(false);
       // Já realiza o primeiro backup automático na pasta do Drive após conectar
       const ts = await syncLocalToGoogleDrive();
       setLastSyncedAt(ts);
@@ -80,6 +109,7 @@ export function GoogleDriveModal({
         `Conectado como ${profile.name}! Backup salvo no Google Drive.`
       );
     } catch (err) {
+      setShowConfig(true);
       setErrorMsg(
         err instanceof Error ? err.message : 'Erro ao conectar com o Google.'
       );
@@ -92,6 +122,11 @@ export function GoogleDriveModal({
     setBusy(true);
     setErrorMsg(null);
     try {
+      const cleaned = sanitizeGoogleClientId(clientIdInput);
+      if (cleaned) {
+        setClientIdInput(cleaned);
+        setConfiguredGoogleClientId(cleaned);
+      }
       if (!user) {
         const profile = await signInWithGoogleDrive('select_account');
         setUser(profile);
@@ -108,6 +143,7 @@ export function GoogleDriveModal({
         setLastSyncedAt(ts);
         onSyncCompleted('Notas e PDFs sincronizados com o Google Drive!');
       } catch {
+        setShowConfig(true);
         setErrorMsg(
           err instanceof Error
             ? err.message
@@ -123,12 +159,22 @@ export function GoogleDriveModal({
     setBusy(true);
     setErrorMsg(null);
     try {
+      const cleaned = sanitizeGoogleClientId(clientIdInput);
+      if (cleaned) {
+        setClientIdInput(cleaned);
+        setConfiguredGoogleClientId(cleaned);
+      }
+      if (!user) {
+        const profile = await signInWithGoogleDrive('select_account');
+        setUser(profile);
+      }
       const res = await restoreFromGoogleDrive();
       setLastSyncedAt(Date.now());
       onSyncCompleted(
         `Restaurados ${res.notebooksCount} cadernos (${res.pagesCount} páginas) do Google Drive!`
       );
     } catch (err) {
+      setShowConfig(true);
       setErrorMsg(
         err instanceof Error
           ? err.message
@@ -309,18 +355,72 @@ export function GoogleDriveModal({
                 Configuração do Google OAuth Client ID
               </p>
               <p className="text-[11px] text-secondary leading-relaxed">
-                Para o botão de login do Google funcionar no domínio da Vercel
-                (ou localhost), cole abaixo o <strong>Client ID Web</strong> do
-                Google Cloud Console (ou defina{' '}
-                <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> na Vercel):
+                Cole abaixo o <strong>ID do cliente</strong> (Tipo:{' '}
+                <strong>Aplicativo da Web</strong>) que termina com{' '}
+                <code>.apps.googleusercontent.com</code> (não cole a chave{' '}
+                <code>GOCSPX-...</code>):
               </p>
               <input
                 type="text"
                 value={clientIdInput}
                 onChange={(e) => setClientIdInput(e.target.value)}
                 placeholder="Ex: 1234567890-abcdefg.apps.googleusercontent.com"
-                className="w-full px-3 py-2 rounded-xl bg-surface border border-[var(--border-subtle)] text-primary text-xs focus:outline-none focus:ring-2 focus:ring-accent"
+                className="w-full px-3 py-2 rounded-xl bg-surface border border-[var(--border-subtle)] text-primary text-xs font-mono focus:outline-none focus:ring-2 focus:ring-accent"
               />
+              {clientIdInput.trim() !== '' && (
+                <div
+                  className={`text-[11px] font-medium flex items-start gap-1.5 ${
+                    clientValidation.valid
+                      ? 'text-emerald-600 dark:text-emerald-400'
+                      : 'text-[#FF3B30]'
+                  }`}
+                >
+                  {clientValidation.valid ? (
+                    <>
+                      <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                      <span>
+                        Formato de ID do cliente válido! Agora clique em &ldquo;Entrar com Conta Google&rdquo;.
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                      <span>{clientValidation.reason}</span>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {currentOrigin && (
+                <div className="p-2.5 rounded-xl bg-surface/80 border border-[var(--border-subtle)] space-y-1">
+                  <p className="text-[10px] font-semibold text-secondary">
+                    URL exata para colocar em &ldquo;Origens JavaScript autorizadas&rdquo; no Google Cloud:
+                  </p>
+                  <div className="flex items-center justify-between gap-2">
+                    <code className="text-[11px] text-primary font-mono truncate">
+                      {currentOrigin}
+                    </code>
+                    <button
+                      type="button"
+                      onClick={handleCopyOrigin}
+                      className="px-2.5 py-1 rounded-lg bg-dock hover:bg-accent/15 text-primary text-[10px] font-semibold flex items-center gap-1 flex-shrink-0"
+                    >
+                      {copiedOrigin ? (
+                        <>
+                          <Check className="w-3 h-3 text-emerald-500" />
+                          Copiado
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3 h-3" />
+                          Copiar URL
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="flex justify-end">
                 <button
                   type="submit"

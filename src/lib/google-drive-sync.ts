@@ -24,18 +24,73 @@ const STORAGE_KEY_USER = 'vanessa_google_user';
 let accessTokenMemory: string | null = null;
 let tokenExpiresAt = 0;
 
+export function sanitizeGoogleClientId(raw: string): string {
+  if (!raw) return '';
+  let cleaned = raw.trim().replace(/^['"]+|['"]+$/g, '').trim();
+
+  // Caso o usuário tenha colado o JSON inteiro baixado do Google Cloud
+  const matchInText = cleaned.match(
+    /([0-9]+-[a-zA-Z0-9_]+\.apps\.googleusercontent\.com)/
+  );
+  if (matchInText) {
+    return matchInText[1];
+  }
+
+  // Caso o usuário tenha copiado apenas o prefixo "123456789-abcdefg" sem o sufixo
+  if (/^[0-9]{6,}-[a-zA-Z0-9_]{8,}$/.test(cleaned)) {
+    cleaned = `${cleaned}.apps.googleusercontent.com`;
+  }
+
+  return cleaned.replace(/\s+/g, '');
+}
+
+export function validateGoogleClientId(clientId: string): {
+  valid: boolean;
+  reason?: string;
+} {
+  const cleaned = sanitizeGoogleClientId(clientId);
+  if (!cleaned) {
+    return {
+      valid: false,
+      reason:
+        'Cole o "ID do cliente" (Client ID) gerado no Google Cloud Console.',
+    };
+  }
+  if (cleaned.toUpperCase().startsWith('GOCSPX')) {
+    return {
+      valid: false,
+      reason:
+        'Você colou a "Chave secreta do cliente" (que começa com GOCSPX-). Volte ao Google Cloud e copie o campo de cima: "ID do cliente", que termina com .apps.googleusercontent.com',
+    };
+  }
+  if (cleaned.startsWith('AIza')) {
+    return {
+      valid: false,
+      reason:
+        'Você colou uma Chave de API (AIza...). No menu Credenciais, clique em "+ Criar Credenciais" -> "ID do cliente OAuth" (Aplicativo da Web) e copie o ID que termina com .apps.googleusercontent.com',
+    };
+  }
+  if (!/^[0-9]+-[a-zA-Z0-9_-]+\.apps\.googleusercontent\.com$/.test(cleaned)) {
+    return {
+      valid: false,
+      reason:
+        'O ID do cliente está incompleto ou incorreto (isso causa o erro 401 invalid_client). Ele deve começar com números e terminar exatamente com .apps.googleusercontent.com (ex: 123456789-abc.apps.googleusercontent.com).',
+    };
+  }
+  return { valid: true };
+}
+
 export function getConfiguredGoogleClientId(): string {
   if (typeof window === 'undefined') return '';
-  return (
-    process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ||
-    window.localStorage.getItem(STORAGE_KEY_CLIENT_ID) ||
-    ''
-  ).trim();
+  const stored = window.localStorage.getItem(STORAGE_KEY_CLIENT_ID) || '';
+  const raw = stored.trim() || process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID || '';
+  return sanitizeGoogleClientId(raw);
 }
 
 export function setConfiguredGoogleClientId(clientId: string): void {
   if (typeof window === 'undefined') return;
-  window.localStorage.setItem(STORAGE_KEY_CLIENT_ID, clientId.trim());
+  const cleaned = sanitizeGoogleClientId(clientId);
+  window.localStorage.setItem(STORAGE_KEY_CLIENT_ID, cleaned);
 }
 
 export function getSavedGoogleUser(): GoogleUserProfile | null {
@@ -112,9 +167,11 @@ export async function signInWithGoogleDrive(
   promptMode: '' | 'consent' | 'select_account' = 'select_account'
 ): Promise<GoogleUserProfile> {
   const clientId = getConfiguredGoogleClientId();
-  if (!clientId) {
+  const validation = validateGoogleClientId(clientId);
+  if (!validation.valid) {
     throw new Error(
-      'Configure o Google Client ID primeiro no modal da Conta Google.'
+      validation.reason ||
+        'Configure o Google Client ID primeiro no modal da Conta Google.'
     );
   }
 
@@ -131,7 +188,7 @@ export async function signInWithGoogleDrive(
                 scope: string;
                 prompt?: string;
                 callback: (resp: GisTokenResponse) => void;
-                error_callback?: (err: { message?: string }) => void;
+                error_callback?: (err: { message?: string; type?: string }) => void;
               }) => { requestAccessToken: () => void };
             };
           };
@@ -145,6 +202,14 @@ export async function signInWithGoogleDrive(
         prompt: promptMode,
         callback: (resp) => {
           if (resp.error || !resp.access_token) {
+            if (resp.error === 'invalid_client') {
+              reject(
+                new Error(
+                  'Erro 401 (invalid_client): O ID do cliente OAuth não foi encontrado no Google Cloud. Verifique se você copiou o "ID do cliente" inteiro (terminado em .apps.googleusercontent.com) e se o tipo é "Aplicativo da Web".'
+                )
+              );
+              return;
+            }
             reject(new Error(resp.error || 'Acesso negado'));
             return;
           }
